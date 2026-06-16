@@ -214,7 +214,7 @@ const cones = [];
         const pt = trackCurve.getPointAt(t);
         const tan = trackCurve.getTangentAt(t);
         const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
-        const sideOffset = (i % 2 === 0 ? 1 : -1) * 6;
+        const sideOffset = (i % 2 === 0 ? 1 : -1) * 9;
         const conePos = new THREE.Vector3(
             pt.x + perp.x * sideOffset,
             0,
@@ -571,7 +571,7 @@ function checkConeCollisions() {
         if (cone.fallen) continue;
         const dx = myCar.position.x - cone.position.x;
         const dz = myCar.position.z - cone.position.z;
-        if (Math.sqrt(dx * dx + dz * dz) < 2.5) {
+        if (Math.sqrt(dx * dx + dz * dz) < 3.5) {
             cone.fallen = true;
             cone.group.rotation.x = Math.PI / 2 + (Math.random() - 0.5) * 0.3;
             cone.group.position.y = 0.35;
