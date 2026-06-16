@@ -2,125 +2,250 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Web Racing Multiplayer</title>
+    <title>Web F1 Multiplayer Arcade</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        #ui-container { position: absolute; top: 15px; left: 15px; color: white; background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        h3 { margin: 0 0 10px 0; color: #4CAF50; }
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #000; }
+        #ui-container { position: absolute; top: 15px; left: 15px; color: white; background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); pointer-events: none; }
+        h3 { margin: 0 0 10px 0; color: #ff3333; font-style: italic; text-transform: uppercase; }
         p { margin: 5px 0; font-size: 14px; }
-        #status { color: #FFC107; font-weight: bold; margin-top: 10px; }
+        #race-state { font-size: 24px; font-weight: bold; color: #FFC107; margin-top: 10px; }
+        #status { color: #888; font-size: 12px; margin-top: 5px; }
     </style>
+    <!-- Load Three.js for 3D Rendering -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Load Ably for Realtime Multiplayer -->
     <script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
 </head>
 <body>
     <div id="ui-container">
-        <h3>Web Racing</h3>
-        <p>🎮 <b>Controls:</b> W, A, S, D to drive</p>
-        <p id="status">Connecting to network...</p>
+        <h3>Arcade F1</h3>
+        <p>🎮 <b>Controls:</b> W,A,S,D to drive</p>
+        <div id="race-state">Initializing...</div>
+        <div id="status">Connecting to network...</div>
     </div>
 
     <script>
         // --- 1. GAME SETTINGS & STATE ---
-        const myId = 'player_' + Math.random().toString(36).substr(2, 9);
-        const players = {}; // Object to store other players' 3D meshes
-        
+        const myId = 'p_' + Math.random().toString(36).substr(2, 6);
+        const players = {}; 
+        let currentLap = 1;
+        let nextCheckpointIndex = 0;
+        const totalLaps = 3;
+
+        // Arcade Driving Physics - Tuned for speed and responsiveness
         let speed = 0;
-        const maxSpeed = 0.6;
-        const acceleration = 0.015;
-        const deceleration = 0.005;
-        const turnSpeed = 0.04;
+        const maxSpeed = 1.3; // Much faster
+        const acceleration = 0.04; // Peppy
+        const deceleration = 0.01;
+        const turnSpeed = 0.045; // Responsive
 
         const keys = { w: false, a: false, s: false, d: false };
 
         // --- 2. THREE.JS ENVIRONMENT SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87ceeb); // Sky blue background
+        scene.background = new THREE.Color(0x87ceeb); // Sky blue
+        scene.fog = new THREE.Fog(0x87ceeb, 200, 500); // Add fog for distance depth
         
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
         document.body.appendChild(renderer.domElement);
 
         // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(20, 40, 20);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(100, 200, 100);
+        dirLight.castShadow = true;
+        // Increase shadow resolution for crisp car shadows
+        dirLight.shadow.mapSize.width = 2048; 
+        dirLight.shadow.mapSize.height = 2048;
         scene.add(dirLight);
 
-        // Ground / Track
-        const groundGeo = new THREE.PlaneGeometry(500, 500);
-        const groundMat = new THREE.MeshStandardMaterial({ color: 0x333333 }); // Asphalt grey
-        const ground = new THREE.Mesh(groundGeo, groundMat);
+        // --- 3. TRACK & ENVIRONMENT GENERATION ---
+
+        // Grass Field
+        const grassGeo = new THREE.PlaneGeometry(1000, 1000);
+        const grassMat = new THREE.MeshStandardMaterial({ color: 0x2d862d }); 
+        const ground = new THREE.Mesh(grassGeo, grassMat);
         ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
         scene.add(ground);
 
-        // Grid Helper to make movement visible
-        const gridHelper = new THREE.GridHelper(500, 100, 0x000000, 0x000000);
-        gridHelper.material.opacity = 0.2;
-        gridHelper.material.transparent = true;
-        scene.add(gridHelper);
+        // Define a wavy track path
+        const trackPoints = [
+            new THREE.Vector3(-100, 0, -80),
+            new THREE.Vector3(0, 0, -100),
+            new THREE.Vector3(100, 0, -80),
+            new THREE.Vector3(120, 0, 0),
+            new THREE.Vector3(100, 0, 80),
+            new THREE.Vector3(0, 0, 100),
+            new THREE.Vector3(-80, 0, 60),
+            new THREE.Vector3(-120, 0, 0),
+            new THREE.Vector3(-100, 0, -80) // Loop back
+        ];
+        const trackCurve = new THREE.CatmullRomCurve3(trackPoints);
+        trackCurve.closed = true;
 
-        // My Car (Red Box)
-        const carGeo = new THREE.BoxGeometry(2, 1, 4);
-        const carMat = new THREE.MeshStandardMaterial({ color: 0xff3333 }); 
-        const myCar = new THREE.Mesh(carGeo, carMat);
-        myCar.position.y = 0.5; // Rest on the ground
+        // Asphalt Road
+        const trackShape = new THREE.Shape();
+        const roadWidth = 20; // Wide enough for racing
+        trackShape.moveTo(0, -roadWidth / 2);
+        trackShape.lineTo(0, roadWidth / 2); // Defines road cross section
+
+        const extrudeSettings = {
+            steps: 200,
+            bevelEnabled: false,
+            extrudePath: trackCurve // Follows the curve
+        };
+
+        const roadGeo = new THREE.ExtrudeGeometry(trackShape, extrudeSettings);
+        const roadMat = new THREE.MeshStandardMaterial({ color: 0x222222, side: THREE.DoubleSide });
+        const road = new THREE.Mesh(roadGeo, roadMat);
+        road.rotation.x = Math.PI / 2; // Flat on ground
+        road.position.y = 0.01; // Avoid flickering on grass
+        road.receiveShadow = true;
+        scene.add(road);
+
+        // --- White Center Line ---
+        const centerlineGeo = new THREE.TubeGeometry(trackCurve, 200, 0.2, 8, true);
+        const centerlineMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const centerline = new THREE.Mesh(centerlineGeo, centerlineMat);
+        centerline.position.y = 0.05; // Slightly above road
+        scene.add(centerline);
+
+        // --- 4. RACING SYSTEM: CHECKPOINTS ---
+        const checkpoints = [];
+        const numCheckpoints = 8;
+        
+        // Define checkpoints along the curve (invisible targets)
+        for (let i = 0; i < numCheckpoints; i++) {
+            const t = i / numCheckpoints;
+            checkpoints.push(trackCurve.getPointAt(t));
+        }
+
+        // Start/Finish Line visual marker
+        const slShape = new THREE.BoxGeometry(roadWidth+5, 0.2, 5);
+        const slMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF });
+        const slLine = new THREE.Mesh(slShape, slMat);
+        const slPos = trackCurve.getPointAt(0); // Position at start of curve
+        const slTangent = trackCurve.getTangentAt(0); // Orient across road
+        slLine.position.set(slPos.x, 0.06, slPos.z);
+        slLine.lookAt(slPos.clone().add(slTangent));
+        slLine.rotateY(Math.PI / 2);
+        scene.add(slLine);
+
+        // --- 5. F1 CAR GENERATOR FUNCTION ---
+        function createF1Car(colorHex) {
+            const carGroup = new THREE.Group();
+
+            // Materials
+            const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex });
+            const wingMat = new THREE.MeshStandardMaterial({ color: colorHex });
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+
+            // 1. Slender Main Body
+            const body = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.6, 5), bodyMat);
+            body.castShadow = true;
+            carGroup.add(body);
+
+            // 2. Nose Cone
+            const nose = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.4, 1.5), bodyMat);
+            nose.position.z = -3; nose.position.y = -0.1;
+            carGroup.add(nose);
+
+            // 3. Cockpit bulge
+            const cockpit = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 1), new THREE.MeshStandardMaterial({color: 0x000000}));
+            cockpit.position.y = 0.5; cockpit.position.z = -0.3;
+            carGroup.add(cockpit);
+
+            // 4. Wings
+            const frontWing = new THREE.Mesh(new THREE.BoxGeometry(3, 0.1, 0.8), wingMat);
+            frontWing.position.z = -3.8; frontWing.position.y = -0.2;
+            carGroup.add(frontWing);
+
+            const rearWing = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.1, 1.2), wingMat);
+            rearWing.position.z = 2.4; rearWing.position.y = 0.6;
+            carGroup.add(rearWing);
+            // Rear wing supports
+            const supp1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.7, 0.2), wingMat);
+            supp1.position.set(1.5, 0.3, 2.4); carGroup.add(supp1);
+            const supp2 = supp1.clone(); supp2.position.x = -1.5; carGroup.add(supp2);
+
+            // 5. Four Wheels
+            const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.6, 12);
+            wheelGeo.rotateZ(Math.PI / 2); // Orient cylinders correctly
+
+            const fwL = new THREE.Mesh(wheelGeo, wheelMat); fwL.position.set(-1.1, 0, -2.5);
+            const fwR = fwL.clone(); fwR.position.x = 1.1;
+            const rwL = fwL.clone(); rwL.scale.set(1.2,1.2,1.2); rwL.position.set(-1.3, 0.1, 1.8); // Larger rear wheels
+            const rwR = rwL.clone(); rwR.position.x = 1.3;
+
+            carGroup.add(fwL, fwR, rwL, rwR);
+            carGroup.children.forEach(c => c.castShadow = true); // All parts cast shadows
+
+            carGroup.rotation.y = Math.PI; // Standardize direction: nose points -Z
+            return carGroup;
+        }
+
+        // --- 6. INITIALIZE MY CAR & CAMERA ---
+        const myCar = createF1Car(0xff3333); // Red Player
+        myCar.position.y = 0.5; 
+
+        // Start my car facing forward on the Start Line
+        const startPoint = trackCurve.getPointAt(0.999); // Place just before 0 to cross it immediately
+        const startTangent = trackCurve.getTangentAt(0); 
+        myCar.position.set(startPoint.x - 5, 0.5, startPoint.z); // Offset slightly to left of center line
+        myCar.lookAt(startPoint.clone().add(startTangent));
         scene.add(myCar);
 
-        // Camera offset for third-person view
-        const relativeCameraOffset = new THREE.Vector3(0, 5, 10);
+        // Updated Camera Offset for closer action
+        const relativeCameraOffset = new THREE.Vector3(0, 4, 10);
 
-        // Input Listeners
-        window.addEventListener('keydown', (e) => {
-            if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true;
-        });
-        window.addEventListener('keyup', (e) => {
-            if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false;
-        });
+        // Update UI
+        document.getElementById('race-state').innerText = `Laps: ${currentLap}/${totalLaps}`;
 
-        // Resize handler
+        // --- 7. INPUT LISTENERS ---
+        window.addEventListener('keydown', (e) => { if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true; });
+        window.addEventListener('keyup', (e) => { if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false; });
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        // --- 3. ABLY MULTIPLAYER LOGIC ---
-        // REPLACE WITH YOUR ABLY API KEY
-        const ABLY_API_KEY = 'mWq-qg.aSAwag:CfLtHjHdS9lBnkqrB9RzytbXrCK76hPhXFoFWa8c65g'; 
+        // --- 8. ABLY MULTIPLAYER LOGIC ---
+        const ABLY_API_KEY = 'YOUR_ABLY_API_KEY_HERE'; 
         
-        // Initialize Ably with a specific client ID for presence tracking
         const ably = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
-        const channel = ably.channels.get('racing-lobby');
+        const channel = ably.channels.get('f1-lobby');
 
         ably.connection.on('connected', () => {
-            document.getElementById('status').innerText = 'Online! Send this file to a friend.';
+            document.getElementById('status').innerText = 'Online! Invite friends by sharing URL.';
             document.getElementById('status').style.color = '#4CAF50';
             
-            // 1. Subscribe to incoming movement data
+            // Subscribe to incoming movement and lap data
             channel.subscribe('move', (message) => {
                 const data = message.data;
-                const senderId = message.clientId;
+                if (message.clientId === myId) return; // Ignore own broadcast
 
-                if (senderId === myId) return; // Ignore our own broadcast
-
-                // Spawn a new car if we haven't seen this player before
-                if (!players[senderId]) {
-                    const otherCarMat = new THREE.MeshStandardMaterial({ color: 0x3366ff }); // Blue for opponents
-                    const otherCar = new THREE.Mesh(carGeo, otherCarMat);
+                // Spawn an F1 car for opponents
+                if (!players[message.clientId]) {
+                    console.log("Opponent Joined:", message.clientId);
+                    const otherCar = createF1Car(0x3366ff); // Blue Opponents
                     otherCar.position.y = 0.5;
                     scene.add(otherCar);
-                    players[senderId] = otherCar;
+                    players[message.clientId] = otherCar;
                 }
 
-                // Update opponent's position and rotation
-                players[senderId].position.set(data.x, data.y, data.z);
-                players[senderId].rotation.y = data.rotation;
+                // Smoothly update opponent's location and rotation
+                players[message.clientId].position.set(data.x, data.y, data.z);
+                players[message.clientId].rotation.y = data.rotation;
+                // Optional: You could render their current lap above their head using text sprites here
             });
 
-            // 2. Remove players from the scene when they close their browser
+            // Remove players when they leave
             channel.presence.subscribe('leave', (member) => {
                 if (players[member.clientId]) {
                     scene.remove(players[member.clientId]);
@@ -128,63 +253,90 @@
                 }
             });
 
-            // 3. Announce that we have joined the game
+            // Enter the presence list
             channel.presence.enter();
         });
 
-        // Broadcast position to the network
+        // Broadcast current position to network
         function broadcastPosition() {
             if (ably.connection.state === 'connected') {
                 channel.publish('move', {
-                    x: myCar.position.x,
-                    y: myCar.position.y,
-                    z: myCar.position.z,
-                    rotation: myCar.rotation.y
+                    x: myCar.position.x, y: myCar.position.y, z: myCar.position.z,
+                    rotation: myCar.rotation.y,
+                    lap: currentLap
                 });
             }
         }
-
-        // Send network updates 10 times a second (100ms)
+        // Send network updates 10 times a second
         setInterval(broadcastPosition, 100);
 
-        // --- 4. MAIN GAME LOOP ---
+        // --- 9. MAIN GAME LOOP ---
         function animate() {
             requestAnimationFrame(animate);
 
-            // Car Physics & Movement
+            // A. Arcade Car Physics & Movement
             if (keys.w) speed += acceleration;
-            if (keys.s) speed -= acceleration;
+            if (keys.s) speed -= acceleration * 0.5; // Reverse is slower
             
-            // Friction/Deceleration when no keys are pressed
+            // Friction
             if (!keys.w && !keys.s) {
-                if (speed > 0) speed -= deceleration;
-                if (speed < 0) speed += deceleration;
+                if (speed > 0) speed = Math.max(0, speed - deceleration);
+                if (speed < 0) speed = Math.min(0, speed + deceleration);
             }
 
-            // Cap the maximum speed
-            speed = Math.max(Math.min(speed, maxSpeed), -maxSpeed / 2);
+            // Cap Speed
+            speed = THREE.MathUtils.clamp(speed, -maxSpeed * 0.3, maxSpeed);
 
-            // Steering (only allow turning if the car is actively moving)
-            if (Math.abs(speed) > 0.01) {
-                const turnDirection = speed > 0 ? 1 : -1;
-                if (keys.a) myCar.rotation.y += turnSpeed * turnDirection;
-                if (keys.d) myCar.rotation.y -= turnSpeed * turnDirection;
+            // Responsive Steering (arcade doesn't depend on speed)
+            if (keys.a) myCar.rotation.y += turnSpeed;
+            if (keys.d) myCar.rotation.y -= turnSpeed;
+
+            // Apply calculated movement based on rotation
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(myCar.quaternion); // Which way is nose pointing?
+            forward.multiplyScalar(speed); // How fast?
+            myCar.position.add(forward); // Move!
+
+            // Keep car on ground (basic, doesn't handle elevation)
+            myCar.position.y = 0.5; 
+
+            // B. Racing System Logic: Checkpoint Detection
+            const myPos = new THREE.Vector3(myCar.position.x, 0, myCar.position.z);
+            const targetCheckpoint = checkpoints[nextCheckpointIndex];
+
+            // If we are close enough to the next required checkpoint (within 15 units)
+            if (myPos.distanceTo(targetCheckpoint) < 15) {
+                console.log(`Checkpoint ${nextCheckpointIndex} Hit!`);
+                nextCheckpointIndex++;
+
+                // If last checkpoint hit, lap complete!
+                if (nextCheckpointIndex >= numCheckpoints) {
+                    nextCheckpointIndex = 0; // Reset for next lap
+                    currentLap++;
+                    
+                    if (currentLap > totalLaps) {
+                        // Game Over Condition
+                        document.getElementById('race-state').innerText = "🏁 FINISHED!";
+                        document.getElementById('race-state').style.color = '#ff3333';
+                        speed = 0; keys.w = false; keys.a=false; keys.s=false; keys.d=false; // Lock controls
+                        console.log("Race complete.");
+                        broadcastPosition(); // Final update
+                    } else {
+                        document.getElementById('race-state').innerText = `Laps: ${currentLap}/${totalLaps}`;
+                    }
+                }
             }
 
-            // Apply calculated speed to the 3D position based on current rotation
-            myCar.position.x -= Math.sin(myCar.rotation.y) * speed;
-            myCar.position.z -= Math.cos(myCar.rotation.y) * speed;
-
-            // Third-Person Camera Logic
+            // C. Third-Person Camera Logic
             const cameraOffset = relativeCameraOffset.clone().applyMatrix4(myCar.matrixWorld);
-            camera.position.lerp(cameraOffset, 0.1); // "Lerp" creates the smooth elastic camera follow effect
+            camera.position.lerp(cameraOffset, 0.15); // Elastic follow
             camera.lookAt(myCar.position);
 
-            // Render the scene
+            // D. Render
             renderer.render(scene, camera);
         }
 
-        // Start the engine
+        // Start Engine
         animate();
     </script>
 </body>
