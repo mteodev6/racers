@@ -6,7 +6,7 @@ const players = {};
 
 let currentLap = 1;      // display: 1-indexed
 let lapsCompleted = 0;   // internal counter incremented on each lap finish
-let nextCheckpointIndex = 0;
+let nextCheckpointIndex = 1;
 const totalLaps = 3;
 
 let gameState = -1;
