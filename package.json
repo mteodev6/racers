@@ -1,0 +1,7 @@
+{
+  "name": "web-racing-multiplayer",
+  "version": "1.0.0",
+  "dependencies": {
+    "ably": "^2.0.0"
+  }
+}
