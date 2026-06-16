@@ -203,8 +203,8 @@ const barriers = [];
 // 5b. Traffic cones in chicane — bright orange, large enough to see
 const cones = [];
 (function buildCones() {
-    const coneBaseGeo = new THREE.CylinderGeometry(0.6, 0.7, 0.12, 8);
-    const coneBodyGeo = new THREE.ConeGeometry(0.5, 1.4, 8);
+    const coneBaseGeo = new THREE.CylinderGeometry(1.0, 1.2, 0.2, 8);
+    const coneBodyGeo = new THREE.ConeGeometry(0.9, 2.4, 8);
     const coneMat = new THREE.MeshStandardMaterial({ color: 0xff5500 });
     const coneWhiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
 
@@ -224,10 +224,8 @@ const cones = [];
         const base = new THREE.Mesh(coneBaseGeo, coneMat);
         const body = new THREE.Mesh(coneBodyGeo, coneMat);
         body.position.y = 0.7;
-        const stripe = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.51, 0.51, 0.18, 8),
-            coneWhiteMat
-        );
+        const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.92, 0.92, 0.3, 8), coneWhiteMat);
+
         stripe.position.y = 0.5;
         coneGroup.add(base, body, stripe);
         coneGroup.position.copy(conePos);
