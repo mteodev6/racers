@@ -17,6 +17,11 @@ const acceleration = 0.03;
 const deceleration = 0.01;
 const turnSpeed = 0.03; 
 
+// Obstacle state
+let oilSlickActive = false;
+let oilSlickTimer = 0;
+let barrierHitCooldown = 0;
+
 const keys = { w: false, a: false, s: false, d: false };
 
 // --- 2. AUDIO SYSTEM ---
@@ -50,6 +55,17 @@ function playBeep(frequency, duration, type="square") {
     gain.connect(audioCtx.destination);
     osc.start();
     osc.stop(audioCtx.currentTime + duration);
+}
+
+function playCrashSound() {
+    if(!audioCtx) return;
+    playBeep(80, 0.3, 'sawtooth');
+    setTimeout(() => playBeep(60, 0.2, 'square'), 100);
+}
+
+function playOilSkidSound() {
+    if(!audioCtx) return;
+    playBeep(200, 0.5, 'sawtooth');
 }
 
 function playFinishFanfare() {
@@ -86,25 +102,35 @@ ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
 scene.add(ground);
 
-// --- 4. TRACK DESIGN: THE HAIRPIN ---
+// --- 4. TRACK DESIGN: EXTENDED CIRCUIT WITH VARIETY ---
+// Longer track with a hairpin, chicane section, and sweeping corners
 const trackPoints = [
-    new THREE.Vector3(0, 0, -150),    
-    new THREE.Vector3(80, 0, -150),   
-    new THREE.Vector3(150, 0, -80),   
-    new THREE.Vector3(150, 0, 0),     
-    new THREE.Vector3(80, 0, 50),     
-    new THREE.Vector3(0, 0, 30),      
-    new THREE.Vector3(-50, 0, 80),    
-    new THREE.Vector3(-150, 0, 80),   
-    new THREE.Vector3(-150, 0, -80),  
-    new THREE.Vector3(-80, 0, -150),  
-    new THREE.Vector3(0, 0, -150)     
+    new THREE.Vector3(0,    0, -160),   // Start/Finish straight
+    new THREE.Vector3(60,   0, -160),
+    new THREE.Vector3(130,  0, -140),
+    new THREE.Vector3(170,  0, -80),    // Fast right sweeper
+    new THREE.Vector3(175,  0,  0),
+    new THREE.Vector3(160,  0,  70),
+    new THREE.Vector3(120,  0, 110),    // Long right bend
+    new THREE.Vector3(60,   0, 130),
+    new THREE.Vector3(10,   0, 110),
+    new THREE.Vector3(-20,  0,  60),    // Chicane entry
+    new THREE.Vector3(20,   0,  30),    // Chicane left
+    new THREE.Vector3(-10,  0,   0),    // Chicane right
+    new THREE.Vector3(-60,  0, -10),
+    new THREE.Vector3(-130, 0, -10),    // Hairpin approach
+    new THREE.Vector3(-170, 0, -50),
+    new THREE.Vector3(-175, 0, -100),   // Tight hairpin
+    new THREE.Vector3(-160, 0, -140),
+    new THREE.Vector3(-110, 0, -165),
+    new THREE.Vector3(-50,  0, -168),
+    new THREE.Vector3(0,    0, -160),   // Back to start
 ];
 const trackCurve = new THREE.CatmullRomCurve3(trackPoints);
 trackCurve.closed = true;
 
 const roadWidth = 26; 
-const roadGeo = new THREE.TubeGeometry(trackCurve, 300, roadWidth / 2, 8, true);
+const roadGeo = new THREE.TubeGeometry(trackCurve, 400, roadWidth / 2, 8, true);
 const roadMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
 const road = new THREE.Mesh(roadGeo, roadMat);
 road.scale.set(1, 0.02, 1); 
@@ -112,11 +138,177 @@ road.position.y = 0.1;
 road.receiveShadow = true;
 scene.add(road);
 
-const centerlineGeo = new THREE.TubeGeometry(trackCurve, 300, 0.2, 8, true);
+const centerlineGeo = new THREE.TubeGeometry(trackCurve, 400, 0.2, 8, true);
 const centerlineMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
 const centerline = new THREE.Mesh(centerlineGeo, centerlineMat);
 centerline.position.y = 0.15; 
 scene.add(centerline);
+
+// Kerbs: red/white alternating along both edges of the track
+(function buildKerbs() {
+    const kerbCount = 120;
+    for (let i = 0; i < kerbCount; i++) {
+        const t = i / kerbCount;
+        const pt = trackCurve.getPointAt(t);
+        const tan = trackCurve.getTangentAt(t);
+        const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+
+        for (const side of [-1, 1]) {
+            const kerbColor = (i % 2 === 0) ? 0xff0000 : 0xffffff;
+            const kerbGeo = new THREE.BoxGeometry(2, 0.15, 3);
+            const kerbMat = new THREE.MeshStandardMaterial({ color: kerbColor });
+            const kerb = new THREE.Mesh(kerbGeo, kerbMat);
+            kerb.position.set(
+                pt.x + perp.x * (roadWidth / 2 + 1) * side,
+                0.12,
+                pt.z + perp.z * (roadWidth / 2 + 1) * side
+            );
+            kerb.lookAt(kerb.position.x + tan.x, 0.12, kerb.position.z + tan.z);
+            kerb.receiveShadow = true;
+            scene.add(kerb);
+        }
+    }
+})();
+
+// --- 5. OBSTACLES ---
+
+// 5a. Tyre barriers along dangerous corners
+const barriers = []; // { mesh, position }
+(function buildTyreBarriers() {
+    // Place barriers on the outside of the hairpin and chicane
+    const barrierZones = [
+        // Hairpin outside wall: t ~ 0.68-0.78
+        { tStart: 0.68, tEnd: 0.78, side: 1, count: 14 },
+        // Fast right sweeper outside: t ~ 0.1-0.2
+        { tStart: 0.10, tEnd: 0.20, side: 1, count: 10 },
+        // Chicane tight apex: t ~ 0.44-0.52
+        { tStart: 0.44, tEnd: 0.52, side: -1, count: 8 },
+        { tStart: 0.44, tEnd: 0.52, side: 1, count: 8 },
+    ];
+
+    const tyreGeo = new THREE.CylinderGeometry(1.0, 1.0, 1.2, 10);
+    const tyreMats = [
+        new THREE.MeshStandardMaterial({ color: 0x111111 }),
+        new THREE.MeshStandardMaterial({ color: 0xff2222 }),
+        new THREE.MeshStandardMaterial({ color: 0xffffff }),
+    ];
+
+    for (const zone of barrierZones) {
+        for (let i = 0; i < zone.count; i++) {
+            const t = zone.tStart + (i / zone.count) * (zone.tEnd - zone.tStart);
+            const pt = trackCurve.getPointAt(t);
+            const tan = trackCurve.getTangentAt(t);
+            const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+
+            const offset = roadWidth / 2 + 2.5;
+            const pos = new THREE.Vector3(
+                pt.x + perp.x * offset * zone.side,
+                0.6,
+                pt.z + perp.z * offset * zone.side
+            );
+
+            const mat = tyreMats[i % tyreMats.length];
+            const tyre = new THREE.Mesh(tyreGeo, mat);
+            tyre.position.copy(pos);
+            tyre.castShadow = true;
+            scene.add(tyre);
+            barriers.push({ mesh: tyre, position: pos.clone() });
+
+            // Stack a second tyre on top
+            const tyre2 = new THREE.Mesh(tyreGeo, tyreMats[(i + 1) % tyreMats.length]);
+            tyre2.position.set(pos.x, 1.8, pos.z);
+            tyre2.castShadow = true;
+            scene.add(tyre2);
+            barriers.push({ mesh: tyre2, position: tyre2.position.clone() });
+        }
+    }
+})();
+
+// 5b. Traffic cones down the chicane centre
+const cones = [];
+(function buildCones() {
+    const coneBaseGeo = new THREE.CylinderGeometry(0.5, 0.6, 0.1, 8);
+    const coneBodyGeo = new THREE.ConeGeometry(0.35, 1.0, 8);
+    const coneMat = new THREE.MeshStandardMaterial({ color: 0xff6600 });
+    const coneWhiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+
+    // Place cones between t=0.42 and t=0.55 (chicane section) along the centreline
+    const conePlacements = 10;
+    for (let i = 0; i < conePlacements; i++) {
+        const t = 0.42 + (i / conePlacements) * 0.13;
+        const pt = trackCurve.getPointAt(t);
+        const tan = trackCurve.getTangentAt(t);
+        const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+
+        // Alternate left/right to form slalom
+        const sideOffset = (i % 2 === 0 ? 1 : -1) * 5;
+        const conePos = new THREE.Vector3(
+            pt.x + perp.x * sideOffset,
+            0,
+            pt.z + perp.z * sideOffset
+        );
+
+        const coneGroup = new THREE.Group();
+        const base = new THREE.Mesh(coneBaseGeo, coneMat);
+        const body = new THREE.Mesh(coneBodyGeo, coneMat);
+        body.position.y = 0.55;
+        // White stripe
+        const stripe = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.36, 0.36, 0.15, 8),
+            coneWhiteMat
+        );
+        stripe.position.y = 0.4;
+        coneGroup.add(base, body, stripe);
+        coneGroup.position.copy(conePos);
+        coneGroup.position.y = 0.05;
+        coneGroup.castShadow = true;
+        scene.add(coneGroup);
+        cones.push({ group: coneGroup, position: conePos.clone(), fallen: false, originalRotation: new THREE.Euler() });
+    }
+})();
+
+// 5c. Oil slick patches at two locations
+const oilSlicks = [];
+(function buildOilSlicks() {
+    const slickPositions = [
+        trackCurve.getPointAt(0.16),  // After first sweeper
+        trackCurve.getPointAt(0.72),  // Hairpin exit
+    ];
+    const slickGeo = new THREE.CircleGeometry(7, 24);
+    const slickMat = new THREE.MeshStandardMaterial({
+        color: 0x1a003a,
+        transparent: true,
+        opacity: 0.75,
+        roughness: 0.1,
+        metalness: 0.8,
+    });
+    for (const pos of slickPositions) {
+        const slick = new THREE.Mesh(slickGeo, slickMat.clone());
+        slick.rotation.x = -Math.PI / 2;
+        slick.position.set(pos.x, 0.12, pos.z);
+        scene.add(slick);
+        oilSlicks.push({ mesh: slick, position: pos.clone(), radius: 7 });
+    }
+})();
+
+// 5d. Pit lane speed bumps (raised strips across track at two points)
+const speedBumps = [];
+(function buildSpeedBumps() {
+    const bumpTs = [0.30, 0.60];
+    const bumpGeo = new THREE.BoxGeometry(roadWidth + 2, 0.3, 1.5);
+    const bumpMat = new THREE.MeshStandardMaterial({ color: 0xffdd00 });
+    for (const t of bumpTs) {
+        const pt = trackCurve.getPointAt(t);
+        const tan = trackCurve.getTangentAt(t);
+        const bump = new THREE.Mesh(bumpGeo, bumpMat);
+        bump.position.set(pt.x, 0.25, pt.z);
+        bump.lookAt(pt.x + tan.x, 0.25, pt.z + tan.z);
+        bump.castShadow = true;
+        bump.receiveShadow = true;
+        scene.add(bump);
+        speedBumps.push({ mesh: bump, position: pt.clone() });
+    }
+})();
 
 // Scenery: Trees
 const treeTrunkGeo = new THREE.CylinderGeometry(0.5, 0.8, 3, 6);
@@ -126,7 +318,7 @@ const treeTopMat = new THREE.MeshStandardMaterial({ color: 0x1e5631 });
 
 for(let i=0; i<120; i++) {
     const angle = Math.random() * Math.PI * 2;
-    const radius = 180 + Math.random() * 120; 
+    const radius = 200 + Math.random() * 120; 
     const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
     trunk.position.set(Math.cos(angle) * radius, 1.5, Math.sin(angle) * radius);
     trunk.castShadow = true;
@@ -154,14 +346,14 @@ function createGrandstand() {
             standGroup.add(guy);
         }
     }
-    standGroup.position.set(0, 0.5, -170);
+    standGroup.position.set(0, 0.5, -185);
     scene.add(standGroup);
 }
 createGrandstand();
 
 // Checkpoints
 const checkpoints = [];
-const numCheckpoints = 24; 
+const numCheckpoints = 30; 
 for (let i = 0; i < numCheckpoints; i++) {
     checkpoints.push(trackCurve.getPointAt(i / numCheckpoints));
 }
@@ -175,7 +367,7 @@ slLine.position.set(startPoint.x, 0.15, startPoint.z);
 slLine.lookAt(startPoint.x + startTangent.x, 0.15, startPoint.z + startTangent.z);
 scene.add(slLine);
 
-// --- 5. F1 CAR GENERATOR ---
+// --- 6. F1 CAR GENERATOR ---
 function makeTextSprite(message) {
     const canvas = document.createElement('canvas');
     canvas.width = 256; canvas.height = 64;
@@ -235,10 +427,10 @@ let myCar;
 const relativeCameraOffset = new THREE.Vector3(0, 4, 10);
 camera.position.set(0, 10, -100); 
 
-// --- 6. MINIMAP LOGIC ---
+// --- 7. MINIMAP LOGIC ---
 const mapCanvas = document.getElementById('minimap');
 const mapCtx = mapCanvas.getContext('2d');
-const mapBounds = 190; 
+const mapBounds = 200; 
 
 function drawMinimap() {
     mapCtx.clearRect(0, 0, 200, 200);
@@ -246,13 +438,21 @@ function drawMinimap() {
 
     mapCtx.beginPath();
     mapCtx.strokeStyle = '#555';
-    mapCtx.lineWidth = 15;
+    mapCtx.lineWidth = 12;
     for(let i=0; i<=100; i++) {
         const pt = trackCurve.getPointAt(i/100);
         if(i===0) mapCtx.moveTo(toMap(pt.x), toMap(pt.z));
         else mapCtx.lineTo(toMap(pt.x), toMap(pt.z));
     }
     mapCtx.stroke();
+
+    // Draw oil slicks on minimap
+    for (const slick of oilSlicks) {
+        mapCtx.fillStyle = 'rgba(80,0,150,0.6)';
+        mapCtx.beginPath();
+        mapCtx.arc(toMap(slick.position.x), toMap(slick.position.z), 4, 0, Math.PI*2);
+        mapCtx.fill();
+    }
 
     mapCtx.fillStyle = 'white';
     mapCtx.fillRect(toMap(startPoint.x)-2, toMap(startPoint.z)-2, 4, 4);
@@ -272,7 +472,7 @@ function drawMinimap() {
     }
 }
 
-// --- 7. ABLY MULTIPLAYER SETUP ---
+// --- 8. ABLY MULTIPLAYER SETUP ---
 let ably, channel;
 
 function connectMultiplayer() {
@@ -324,7 +524,7 @@ function broadcastPosition() {
 }
 setInterval(broadcastPosition, 100);
 
-// --- 8. GAME SYSTEMS & UI ---
+// --- 9. GAME SYSTEMS & UI ---
 document.getElementById('join-btn').addEventListener('click', () => {
     myName = document.getElementById('player-name').value || "Racer";
     myColor = document.getElementById('player-color').value;
@@ -380,6 +580,15 @@ function startCountdown() {
     }, 1000);
 }
 
+// Obstacle notification HUD
+function showHazardMessage(msg, color = '#ff6600') {
+    const el = document.getElementById('hazard-msg');
+    el.innerText = msg;
+    el.style.color = color;
+    el.style.opacity = 1;
+    setTimeout(() => { el.style.opacity = 0; }, 1800);
+}
+
 function updateUI() {
     const displaySpeed = Math.abs(speed * 200).toFixed(0);
     document.getElementById('speedometer').innerText = displaySpeed;
@@ -392,6 +601,14 @@ function updateUI() {
         document.getElementById('timer').innerText = `${min}:${sec}.${ms}`;
     }
 
+    // Oil slick tint overlay
+    const overlay = document.getElementById('oil-overlay');
+    if (oilSlickActive) {
+        overlay.style.opacity = 0.25;
+    } else {
+        overlay.style.opacity = 0;
+    }
+
     drawMinimap();
 }
 
@@ -402,7 +619,89 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// --- 9. MAIN GAME LOOP ---
+// --- 10. OBSTACLE COLLISION HELPERS ---
+function checkBarrierCollisions() {
+    if (barrierHitCooldown > 0) { barrierHitCooldown--; return; }
+    for (const barrier of barriers) {
+        const dx = myCar.position.x - barrier.position.x;
+        const dz = myCar.position.z - barrier.position.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        if (dist < 2.8) {
+            // Bounce back
+            const angle = Math.atan2(dz, dx);
+            myCar.position.x += Math.cos(angle) * 1.5;
+            myCar.position.z += Math.sin(angle) * 1.5;
+            speed *= -0.3;
+            barrierHitCooldown = 20;
+            playCrashSound();
+            showHazardMessage('💥 TYRE BARRIER!', '#ff2200');
+            // Visually nudge the barrier
+            barrier.mesh.rotation.z = (Math.random() - 0.5) * 0.4;
+            return;
+        }
+    }
+}
+
+function checkConeCollisions() {
+    for (const cone of cones) {
+        if (cone.fallen) continue;
+        const dx = myCar.position.x - cone.position.x;
+        const dz = myCar.position.z - cone.position.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        if (dist < 2.5) {
+            // Knock cone over
+            cone.fallen = true;
+            cone.group.rotation.x = Math.PI / 2 + (Math.random() - 0.5) * 0.3;
+            cone.group.position.y = 0.35;
+            speed *= 0.75;
+            playBeep(300, 0.2, 'square');
+            showHazardMessage('🔶 CONE HIT! Slow down!', '#ff9900');
+        }
+    }
+}
+
+function checkOilSlickCollisions() {
+    if (oilSlickActive) {
+        oilSlickTimer--;
+        if (oilSlickTimer <= 0) {
+            oilSlickActive = false;
+        }
+        return;
+    }
+    for (const slick of oilSlicks) {
+        const dx = myCar.position.x - slick.position.x;
+        const dz = myCar.position.z - slick.position.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        if (dist < slick.radius) {
+            oilSlickActive = true;
+            oilSlickTimer = 120; // ~4 seconds at 30fps
+            playOilSkidSound();
+            showHazardMessage('🛢 OIL SLICK! Steering impaired!', '#cc44ff');
+            return;
+        }
+    }
+}
+
+function checkSpeedBumpCollisions() {
+    for (const bump of speedBumps) {
+        const dx = myCar.position.x - bump.position.x;
+        const dz = myCar.position.z - bump.position.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        if (dist < 8) {
+            if (Math.abs(speed) > 0.5) {
+                speed *= 0.6;
+                myCar.position.y = 0.5 + 0.4; // small bounce
+                playBeep(180, 0.15, 'triangle');
+                showHazardMessage('⚠️ SPEED BUMP!', '#ffdd00');
+            }
+        } else {
+            // Reset y outside bump
+            if (!oilSlickActive) myCar.position.y = 0.5;
+        }
+    }
+}
+
+// --- 11. MAIN GAME LOOP ---
 function animate() {
     requestAnimationFrame(animate);
 
@@ -413,6 +712,8 @@ function animate() {
 
     if (myCar && gameState >= 1) {
         if (gameState === 2) {
+            const steerMult = oilSlickActive ? 2.5 : 1.0; // oil makes steering wild
+
             if (keys.w) speed += acceleration;
             if (keys.s) speed -= acceleration * 0.6; 
             
@@ -425,15 +726,21 @@ function animate() {
 
             if (Math.abs(speed) > 0.05) {
                 const direction = speed > 0 ? 1 : -1;
-                if (keys.a) myCar.rotation.y += turnSpeed * direction;
-                if (keys.d) myCar.rotation.y -= turnSpeed * direction;
+                if (keys.a) myCar.rotation.y += turnSpeed * direction * steerMult;
+                if (keys.d) myCar.rotation.y -= turnSpeed * direction * steerMult;
             }
 
             const forward = new THREE.Vector3(0, 0, -1);
             forward.applyQuaternion(myCar.quaternion); 
             forward.multiplyScalar(speed); 
             myCar.position.add(forward); 
-            myCar.position.y = 0.5; 
+            if (!oilSlickActive) myCar.position.y = 0.5;
+
+            // Obstacle checks
+            checkBarrierCollisions();
+            checkConeCollisions();
+            checkOilSlickCollisions();
+            checkSpeedBumpCollisions();
 
             for (const id in players) {
                 const opp = players[id].mesh;
@@ -443,10 +750,8 @@ function animate() {
 
                 if (dist < 3.5) { 
                     const angle = Math.atan2(dz, dx);
-                    
                     myCar.position.x += Math.cos(angle) * 0.5;
                     myCar.position.z += Math.sin(angle) * 0.5;
-                    
                     speed *= 0.4; 
                     playBeep(120, 0.15, "square");
                 }
@@ -457,7 +762,7 @@ function animate() {
             const chk_dz = myCar.position.z - targetPoint.z;
             const flatDistance = Math.sqrt(chk_dx*chk_dx + chk_dz*chk_dz);
 
-            if (flatDistance < 40) {
+            if (flatDistance < 45) {
                 playBeep(600, 0.1, "sine"); 
                 nextCheckpointIndex++;
                 
