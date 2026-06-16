@@ -17,7 +17,7 @@
         button { background: #4CAF50; color: white; border: none; padding: 15px 20px; font-size: 18px; font-weight: bold; border-radius: 6px; cursor: pointer; width: 100%; transition: background 0.2s; text-transform: uppercase; }
         button:hover { background: #45a049; }
 
-        /* UI Layout (Hidden initially) */
+        /* UI Layout */
         #game-ui { display: none; }
         #top-left { position: absolute; top: 15px; left: 15px; color: white; background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 8px; }
         h3 { margin: 0 0 5px 0; color: #ff3333; font-style: italic; text-transform: uppercase; }
@@ -82,7 +82,6 @@
         let nextCheckpointIndex = 0;
         const totalLaps = 3;
 
-        // -1 = Menu, 0 = Connecting, 1 = Countdown, 2 = Racing, 3 = Finished
         let gameState = -1; 
         let raceStartTime = 0;
 
@@ -90,24 +89,23 @@
         const maxSpeed = 1.3; 
         const acceleration = 0.03; 
         const deceleration = 0.01;
-        const turnSpeed = 0.025; 
+        const turnSpeed = 0.03; // Slightly tighter turning for new map
 
         const keys = { w: false, a: false, s: false, d: false };
 
-        // --- 2. AUDIO SYSTEM (Procedural SFX) ---
+        // --- 2. AUDIO SYSTEM ---
         let audioCtx, engineOsc, engineGain;
         
         function initAudio() {
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             audioCtx = new AudioContext();
             
-            // Engine Rumble Setup
             engineOsc = audioCtx.createOscillator();
             engineOsc.type = 'sawtooth';
-            engineOsc.frequency.setValueAtTime(40, audioCtx.currentTime); // Low idle rumble
+            engineOsc.frequency.setValueAtTime(40, audioCtx.currentTime); 
             
             engineGain = audioCtx.createGain();
-            engineGain.gain.setValueAtTime(0, audioCtx.currentTime); // Muted until countdown finishes
+            engineGain.gain.setValueAtTime(0, audioCtx.currentTime); 
             
             engineOsc.connect(engineGain);
             engineGain.connect(audioCtx.destination);
@@ -129,9 +127,9 @@
         }
 
         function playFinishFanfare() {
-            playBeep(440, 0.2); // A
-            setTimeout(() => playBeep(554, 0.2), 200); // C#
-            setTimeout(() => playBeep(659, 0.6), 400); // E
+            playBeep(440, 0.2); 
+            setTimeout(() => playBeep(554, 0.2), 200); 
+            setTimeout(() => playBeep(659, 0.6), 400); 
         }
 
         // --- 3. THREE.JS ENVIRONMENT SETUP ---
@@ -155,7 +153,6 @@
         dirLight.shadow.mapSize.height = 2048;
         scene.add(dirLight);
 
-        // --- 4. TRACK & SCENERY GENERATION ---
         const grassGeo = new THREE.PlaneGeometry(1000, 1000);
         const grassMat = new THREE.MeshStandardMaterial({ color: 0x2d862d }); 
         const ground = new THREE.Mesh(grassGeo, grassMat);
@@ -163,94 +160,84 @@
         ground.receiveShadow = true;
         scene.add(ground);
 
+        // --- 4. NEW TRACK DESIGN: THE HAIRPIN ---
+        // Ensure all Y coordinates are STRICTLY 0 to guarantee perfect flatness
         const trackPoints = [
-            new THREE.Vector3(0, 0, -120),    
-            new THREE.Vector3(60, 0, -120),   
-            new THREE.Vector3(120, 0, -120),  
-            new THREE.Vector3(170, 0, -70),   
-            new THREE.Vector3(170, 0, 70),    
-            new THREE.Vector3(120, 0, 120),   
-            new THREE.Vector3(-120, 0, 120),  
-            new THREE.Vector3(-170, 0, 70),   
-            new THREE.Vector3(-170, 0, -70),  
-            new THREE.Vector3(-120, 0, -120), 
-            new THREE.Vector3(-60, 0, -120),  
-            new THREE.Vector3(0, 0, -120)     
+            new THREE.Vector3(0, 0, -150),    // Start/Finish straight
+            new THREE.Vector3(80, 0, -150),   // Turn 1 entry
+            new THREE.Vector3(150, 0, -80),   // Turn 1 exit
+            new THREE.Vector3(150, 0, 0),     // Straight
+            new THREE.Vector3(80, 0, 50),     // Hairpin entry
+            new THREE.Vector3(0, 0, 30),      // Hairpin apex
+            new THREE.Vector3(-50, 0, 80),    // Hairpin exit
+            new THREE.Vector3(-150, 0, 80),   // Long sweep
+            new THREE.Vector3(-150, 0, -80),  // Straight
+            new THREE.Vector3(-80, 0, -150),  // Final turn
+            new THREE.Vector3(0, 0, -150)     // Loop back
         ];
         const trackCurve = new THREE.CatmullRomCurve3(trackPoints);
         trackCurve.closed = true;
 
-        const roadWidth = 24; 
-        const roadGeo = new THREE.TubeGeometry(trackCurve, 250, roadWidth / 2, 8, true);
+        const roadWidth = 26; 
+        const roadGeo = new THREE.TubeGeometry(trackCurve, 300, roadWidth / 2, 8, true);
         const roadMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
         const road = new THREE.Mesh(roadGeo, roadMat);
-        road.scale.set(1, 0.05, 1); 
+        road.scale.set(1, 0.02, 1); // Extra squashed to be completely flat
         road.position.y = 0.1; 
         road.receiveShadow = true;
         scene.add(road);
 
-        const centerlineGeo = new THREE.TubeGeometry(trackCurve, 250, 0.2, 8, true);
+        const centerlineGeo = new THREE.TubeGeometry(trackCurve, 300, 0.2, 8, true);
         const centerlineMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
         const centerline = new THREE.Mesh(centerlineGeo, centerlineMat);
-        centerline.position.y = 0.2; 
+        centerline.position.y = 0.15; 
         scene.add(centerline);
 
-        // A. Trees
+        // Scenery: Trees
         const treeTrunkGeo = new THREE.CylinderGeometry(0.5, 0.8, 3, 6);
         const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033 });
         const treeTopGeo = new THREE.ConeGeometry(2.5, 6, 8);
         const treeTopMat = new THREE.MeshStandardMaterial({ color: 0x1e5631 });
 
-        for(let i=0; i<100; i++) {
-            // Randomly place trees in a massive donut shape around the track
+        for(let i=0; i<120; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const radius = 180 + Math.random() * 100; // Outer forest
-            
+            const radius = 180 + Math.random() * 120; 
             const trunk = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
             trunk.position.set(Math.cos(angle) * radius, 1.5, Math.sin(angle) * radius);
             trunk.castShadow = true;
-            
             const top = new THREE.Mesh(treeTopGeo, treeTopMat);
             top.position.set(trunk.position.x, 5, trunk.position.z);
             top.castShadow = true;
-
             scene.add(trunk, top);
         }
 
-        // B. The Grandstand & Crowd
+        // Scenery: Grandstand
         const crowdMembers = [];
         function createGrandstand() {
             const standGroup = new THREE.Group();
             const standMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
-            
-            // Build 3 steps
             for(let step=0; step<3; step++) {
                 const bench = new THREE.Mesh(new THREE.BoxGeometry(40, 1, 3), standMat);
                 bench.position.set(0, step * 1, step * -3);
                 bench.castShadow = true;
                 standGroup.add(bench);
-
-                // Add 10 bouncy crowd members per step
                 for(let c=0; c<10; c++) {
                     const randomColor = Math.floor(Math.random()*16777215);
                     const guy = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.5, 0.8), new THREE.MeshStandardMaterial({ color: randomColor }));
                     guy.position.set(-18 + (c * 4) + (Math.random()*2), (step*1) + 1, (step*-3));
-                    // Store original Y so we can animate the bounce
                     crowdMembers.push({ mesh: guy, baseY: guy.position.y, offset: Math.random() * Math.PI * 2 });
                     standGroup.add(guy);
                 }
             }
-            
-            // Position the entire stand outside Turn 4 / Start line
-            standGroup.position.set(-30, 0.5, -140);
-            standGroup.rotation.y = Math.PI / 12; // Angle it slightly toward the track
+            // Move Grandstand to fit the new straightaway
+            standGroup.position.set(0, 0.5, -170);
             scene.add(standGroup);
         }
         createGrandstand();
 
-        // C. Checkpoints & Start Line
+        // FIXED: Increased Checkpoints & Wider Radius
         const checkpoints = [];
-        const numCheckpoints = 16; 
+        const numCheckpoints = 24; // Much higher density of checkpoints
         for (let i = 0; i < numCheckpoints; i++) {
             checkpoints.push(trackCurve.getPointAt(i / numCheckpoints));
         }
@@ -265,7 +252,6 @@
         scene.add(slLine);
 
         // --- 5. F1 CAR GENERATOR ---
-        // Helper to draw Floating Text Names
         function makeTextSprite(message) {
             const canvas = document.createElement('canvas');
             canvas.width = 256; canvas.height = 64;
@@ -273,7 +259,6 @@
             context.font = "bold 28px sans-serif";
             context.fillStyle = "white";
             context.textAlign = "center";
-            // Black outline
             context.lineWidth = 4;
             context.strokeStyle = "black";
             context.strokeText(message, 128, 40);
@@ -282,7 +267,7 @@
             const spriteMat = new THREE.SpriteMaterial({ map: tex });
             const sprite = new THREE.Sprite(spriteMat);
             sprite.scale.set(6, 1.5, 1);
-            sprite.position.y = 2.5; // Float above car
+            sprite.position.y = 2.5; 
             return sprite;
         }
 
@@ -315,19 +300,16 @@
             carGroup.add(body, nose, cockpit, frontWing, rearWing, supp1, supp2, fwL, fwR, rwL, rwR);
             carGroup.children.forEach(c => { c.castShadow = true; }); 
 
-            // Add floating name tag
             if(playerName) {
                 const nameTag = makeTextSprite(playerName);
                 carGroup.add(nameTag);
             }
-
             return carGroup;
         }
 
-        // Initialize empty player slot (Will be filled when Start Engine is clicked)
         let myCar;
         const relativeCameraOffset = new THREE.Vector3(0, 4, 10);
-        camera.position.set(0, 10, -100); // Menu camera angle
+        camera.position.set(0, 10, -100); 
 
         // --- 6. MINIMAP LOGIC ---
         const mapCanvas = document.getElementById('minimap');
@@ -382,7 +364,6 @@
                     const data = message.data;
                     if (message.clientId === myId) return; 
 
-                    // If we haven't seen this opponent yet, build their car using their color and name
                     if (!players[message.clientId]) {
                         const otherCar = createF1Car(data.color, data.name); 
                         otherCar.position.y = 0.5;
@@ -412,8 +393,8 @@
                 channel.publish('move', { 
                     x: myCar.position.x, y: myCar.position.y, z: myCar.position.z, 
                     rotation: euler.y,
-                    color: myColor, // Broadcast custom color
-                    name: myName    // Broadcast custom name
+                    color: myColor, 
+                    name: myName    
                 });
             }
         }
@@ -421,21 +402,29 @@
 
         // --- 8. GAME SYSTEMS & UI ---
         document.getElementById('join-btn').addEventListener('click', () => {
-            // Grab user choices
             myName = document.getElementById('player-name').value || "Racer";
             myColor = document.getElementById('player-color').value;
 
-            // Hide menu, show UI
             document.getElementById('main-menu').style.display = 'none';
             document.getElementById('game-ui').style.display = 'block';
 
-            // Create my custom car
             myCar = createF1Car(myColor, myName); 
-            myCar.position.set(startPoint.x - startTangent.x * 5, 0.5, startPoint.z - startTangent.z * 5); 
+            
+            // ANTI-PILEUP SPAWN: Add random left/right and front/back offsets so players don't explode instantly
+            const perpX = startTangent.z;
+            const perpZ = -startTangent.x;
+            const randomGridOffset = (Math.random() - 0.5) * 12; // Spread left and right
+            const randomDepthOffset = 5 + (Math.random() * 15); // Spread forward and back
+
+            myCar.position.set(
+                startPoint.x - (startTangent.x * randomDepthOffset) + (perpX * randomGridOffset), 
+                0.5, 
+                startPoint.z - (startTangent.z * randomDepthOffset) + (perpZ * randomGridOffset)
+            ); 
             myCar.lookAt(startPoint.x + startTangent.x, 0.5, startPoint.z + startTangent.z);
             scene.add(myCar);
 
-            gameState = 0; // Move from Menu to Connecting
+            gameState = 0; 
             initAudio();
             connectMultiplayer();
         });
@@ -451,13 +440,12 @@
                 if(count > 0) {
                     cdText.innerText = count;
                     cdText.style.transform = `scale(${1 + Math.random()*0.2})`; 
-                    playBeep(400, 0.1); // Short low beep
+                    playBeep(400, 0.1); 
                 } else if (count === 0) {
                     cdText.innerText = "GO!";
                     cdText.style.color = "#4CAF50";
-                    playBeep(800, 0.3); // High loud beep
+                    playBeep(800, 0.3); 
                     
-                    // Unmute Engine
                     if(engineGain) engineGain.gain.setTargetAtTime(0.05, audioCtx.currentTime, 0.5);
 
                     gameState = 2; 
@@ -484,7 +472,6 @@
             drawMinimap();
         }
 
-        // Inputs
         window.addEventListener('keydown', (e) => { if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true; });
         window.addEventListener('keyup', (e) => { if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false; });
         window.addEventListener('resize', () => {
@@ -496,13 +483,11 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            // Animate Crowd (Always running)
             const time = Date.now() * 0.01;
             crowdMembers.forEach(c => {
                 c.mesh.position.y = c.baseY + Math.abs(Math.sin(time + c.offset)) * 0.4;
             });
 
-            // Car Logic (Only if spawned)
             if (myCar && gameState >= 1) {
                 if (gameState === 2) {
                     if (keys.w) speed += acceleration;
@@ -525,16 +510,40 @@
                     forward.applyQuaternion(myCar.quaternion); 
                     forward.multiplyScalar(speed); 
                     myCar.position.add(forward); 
-                    myCar.position.y = 0.5; 
+                    myCar.position.y = 0.5; // Strictly locked Y axis
 
-                    // Checkpoints
+                    // --- NEW: COLLISION PHYSICS ---
+                    for (const id in players) {
+                        const opp = players[id].mesh;
+                        const dx = myCar.position.x - opp.position.x;
+                        const dz = myCar.position.z - opp.position.z;
+                        const dist = Math.sqrt(dx*dx + dz*dz); // Measure 2D distance
+
+                        if (dist < 3.5) { // If closer than car width/length
+                            // Calculate bounce angle
+                            const angle = Math.atan2(dz, dx);
+                            
+                            // Shove our car backward/outward
+                            myCar.position.x += Math.cos(angle) * 0.5;
+                            myCar.position.z += Math.sin(angle) * 0.5;
+                            
+                            // Cut speed heavily to simulate a crash
+                            speed *= 0.4; 
+
+                            // Play crash sound!
+                            playBeep(120, 0.15, "square");
+                        }
+                    }
+
+                    // --- CHECKPOINTS ---
                     const targetPoint = checkpoints[nextCheckpointIndex];
-                    const dx = myCar.position.x - targetPoint.x;
-                    const dz = myCar.position.z - targetPoint.z;
-                    const flatDistance = Math.sqrt(dx*dx + dz*dz);
+                    const chk_dx = myCar.position.x - targetPoint.x;
+                    const chk_dz = myCar.position.z - targetPoint.z;
+                    const flatDistance = Math.sqrt(chk_dx*chk_dx + chk_dz*chk_dz);
 
-                    if (flatDistance < 30) {
-                        playBeep(600, 0.1, "sine"); // Checkpoint Ping
+                    // INCREASED RADIUS: Mathematically impossible to skip over it now
+                    if (flatDistance < 40) {
+                        playBeep(600, 0.1, "sine"); 
                         nextCheckpointIndex++;
                         
                         if (nextCheckpointIndex >= numCheckpoints) {
@@ -547,14 +556,13 @@
                                 document.getElementById('race-state').style.color = '#4CAF50';
                                 document.getElementById('countdown-text').innerText = "FINISH";
                                 document.getElementById('countdown-text').style.opacity = 1;
-                                playFinishFanfare(); // Play End Sound
+                                playFinishFanfare(); 
                             } else {
                                 document.getElementById('race-state').innerText = `Laps: ${currentLap}/${totalLaps}`;
                             }
                         }
                     }
 
-                    // Update Engine Sound
                     if(audioCtx && engineOsc) {
                         const targetFreq = 40 + (Math.abs(speed) / maxSpeed) * 150;
                         engineOsc.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.1);
@@ -562,7 +570,6 @@
                     }
 
                 } else if (gameState === 3) {
-                    // Auto-brake at finish line
                     speed = Math.max(0, speed - deceleration);
                     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(myCar.quaternion).multiplyScalar(speed);
                     myCar.position.add(forward); 
@@ -571,7 +578,6 @@
 
                 updateUI();
 
-                // Camera Follow
                 const cameraOffset = relativeCameraOffset.clone().applyMatrix4(myCar.matrixWorld);
                 camera.position.lerp(cameraOffset, 0.15); 
                 camera.lookAt(myCar.position);
