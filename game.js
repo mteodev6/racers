@@ -304,7 +304,7 @@ createGrandstand();
 const numCheckpoints = 30;
 const checkpoints = [];
 for (let i = 0; i < numCheckpoints; i++) {
-    checkpoints.push(trackCurve.getPointAt(i / numCheckpoints));
+    checkpoints.push(trackCurve.getPointAt((i + 0.5) / numCheckpoints));
 }
 const CHECKPOINT_RADIUS = 18; // tight enough to need to actually drive through
 
