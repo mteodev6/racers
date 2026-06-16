@@ -61,16 +61,14 @@
         let nextCheckpointIndex = 0;
         const totalLaps = 3;
 
-        // Game States: 0 = Setup, 1 = Countdown, 2 = Racing, 3 = Finished
         let gameState = 0; 
         let raceStartTime = 0;
 
-        // Arcade Driving Physics (Tuned steering)
         let speed = 0;
         const maxSpeed = 1.3; 
         const acceleration = 0.03; 
         const deceleration = 0.01;
-        const turnSpeed = 0.025; // LOWERED: Smoother steering
+        const turnSpeed = 0.025; 
 
         const keys = { w: false, a: false, s: false, d: false };
 
@@ -103,18 +101,26 @@
         ground.receiveShadow = true;
         scene.add(ground);
 
+        // FIXED: A larger track with a strictly defined start/finish straightaway
         const trackPoints = [
-            new THREE.Vector3(-100, 0, -80), new THREE.Vector3(0, 0, -100),
-            new THREE.Vector3(100, 0, -80), new THREE.Vector3(120, 0, 0),
-            new THREE.Vector3(100, 0, 80), new THREE.Vector3(0, 0, 100),
-            new THREE.Vector3(-80, 0, 60), new THREE.Vector3(-120, 0, 0),
-            new THREE.Vector3(-100, 0, -80)
+            new THREE.Vector3(0, 0, -120),    // Start/Finish Line
+            new THREE.Vector3(60, 0, -120),   // Force straight continuation
+            new THREE.Vector3(120, 0, -120),  // End of straight
+            new THREE.Vector3(170, 0, -70),   // Turn 1
+            new THREE.Vector3(170, 0, 70),    // Short straight
+            new THREE.Vector3(120, 0, 120),   // Turn 2
+            new THREE.Vector3(-120, 0, 120),  // Long back straight
+            new THREE.Vector3(-170, 0, 70),   // Turn 3
+            new THREE.Vector3(-170, 0, -70),  // Short straight
+            new THREE.Vector3(-120, 0, -120), // Turn 4
+            new THREE.Vector3(-60, 0, -120),  // Force straight continuation
+            new THREE.Vector3(0, 0, -120)     // Loop back strictly straight
         ];
         const trackCurve = new THREE.CatmullRomCurve3(trackPoints);
         trackCurve.closed = true;
 
-        const roadWidth = 22;
-        const roadGeo = new THREE.TubeGeometry(trackCurve, 200, roadWidth / 2, 8, true);
+        const roadWidth = 24; // Widened slightly for better racing
+        const roadGeo = new THREE.TubeGeometry(trackCurve, 250, roadWidth / 2, 8, true);
         const roadMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
         const road = new THREE.Mesh(roadGeo, roadMat);
         road.scale.set(1, 0.05, 1); 
@@ -122,7 +128,7 @@
         road.receiveShadow = true;
         scene.add(road);
 
-        const centerlineGeo = new THREE.TubeGeometry(trackCurve, 200, 0.2, 8, true);
+        const centerlineGeo = new THREE.TubeGeometry(trackCurve, 250, 0.2, 8, true);
         const centerlineMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
         const centerline = new THREE.Mesh(centerlineGeo, centerlineMat);
         centerline.position.y = 0.2; 
@@ -130,19 +136,17 @@
 
         // --- 4. RACING SYSTEM: CHECKPOINTS & START LINE ---
         const checkpoints = [];
-        const numCheckpoints = 10; // Added more checkpoints for reliability
+        const numCheckpoints = 16; // Increased checkpoints for a larger track
         for (let i = 0; i < numCheckpoints; i++) {
             checkpoints.push(trackCurve.getPointAt(i / numCheckpoints));
         }
 
-        // FIXED: Flat Box for Start Line (No weird twisting)
         const startPoint = trackCurve.getPointAt(0); 
         const startTangent = trackCurve.getTangentAt(0); 
         const slBox = new THREE.BoxGeometry(roadWidth + 2, 0.1, 2);
         const slMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF });
         const slLine = new THREE.Mesh(slBox, slMat);
         slLine.position.set(startPoint.x, 0.15, startPoint.z);
-        // Force the Y level so it doesn't dip into the ground
         slLine.lookAt(startPoint.x + startTangent.x, 0.15, startPoint.z + startTangent.z);
         scene.add(slLine);
 
@@ -180,11 +184,10 @@
 
         // --- 6. INITIALIZE MY CAR ---
         const myCar = createF1Car(0xff3333); 
-        // FIXED: Safe Ground placement
-        myCar.position.set(startPoint.x - 3, 0.5, startPoint.z); 
-        // Calculate raw Y rotation to face the track direction without tilting
-        const angleY = Math.atan2(startTangent.x, startTangent.z);
-        myCar.rotation.y = angleY;
+        
+        // Place car smoothly behind the start line on the exact tangent
+        myCar.position.set(startPoint.x - startTangent.x * 5, 0.5, startPoint.z - startTangent.z * 5); 
+        myCar.lookAt(startPoint.x + startTangent.x, 0.5, startPoint.z + startTangent.z);
         scene.add(myCar);
 
         const relativeCameraOffset = new THREE.Vector3(0, 4, 10);
@@ -200,15 +203,12 @@
         // --- 8. MINIMAP LOGIC ---
         const mapCanvas = document.getElementById('minimap');
         const mapCtx = mapCanvas.getContext('2d');
-        const mapBounds = 150; // Map stretches from -150 to +150
+        const mapBounds = 190; // Expanded to fit the new, larger track
         
         function drawMinimap() {
             mapCtx.clearRect(0, 0, 200, 200);
-            
-            // Helper to translate 3D space to 2D canvas (0-200px)
             const toMap = (val) => ((val + mapBounds) / (mapBounds * 2)) * 200;
 
-            // Draw Track Loop
             mapCtx.beginPath();
             mapCtx.strokeStyle = '#555';
             mapCtx.lineWidth = 15;
@@ -219,11 +219,9 @@
             }
             mapCtx.stroke();
 
-            // Draw Start Line Marker
             mapCtx.fillStyle = 'white';
             mapCtx.fillRect(toMap(startPoint.x)-2, toMap(startPoint.z)-2, 4, 4);
 
-            // Draw Opponents (Blue)
             mapCtx.fillStyle = '#3366ff';
             for (const id in players) {
                 const opp = players[id];
@@ -232,7 +230,6 @@
                 mapCtx.fill();
             }
 
-            // Draw Me (Red)
             mapCtx.fillStyle = '#ff3333';
             mapCtx.beginPath();
             mapCtx.arc(toMap(myCar.position.x), toMap(myCar.position.z), 5, 0, Math.PI*2);
@@ -240,16 +237,13 @@
         }
 
         // --- 9. ABLY MULTIPLAYER LOGIC ---
-        const ABLY_API_KEY = 'mWq-qg.aSAwag:CfLtHjHdS9lBnkqrB9RzytbXrCK76hPhXFoFWa8c65g'; 
-        
-        const ably = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
+        // VERCEL SECURE AUTHENTICATION
+        const ably = new Ably.Realtime({ authUrl: '/api/ably-auth?clientId=' + myId });
         const channel = ably.channels.get('f1-lobby');
 
         ably.connection.on('connected', () => {
             document.getElementById('status').innerText = 'Network Connected!';
             document.getElementById('status').style.color = '#4CAF50';
-            
-            // Start the Countdown Sequence
             startCountdown();
 
             channel.subscribe('move', (message) => {
@@ -277,6 +271,7 @@
 
         function broadcastPosition() {
             if (ably.connection.state === 'connected' && gameState === 2) {
+                // Safely extract the clean Y rotation to broadcast
                 const euler = new THREE.Euler().setFromQuaternion(myCar.quaternion);
                 channel.publish('move', { x: myCar.position.x, y: myCar.position.y, z: myCar.position.z, rotation: euler.y });
             }
@@ -294,11 +289,11 @@
                 count--;
                 if(count > 0) {
                     cdText.innerText = count;
-                    cdText.style.transform = `scale(${1 + Math.random()*0.2})`; // little pop effect
+                    cdText.style.transform = `scale(${1 + Math.random()*0.2})`; 
                 } else if (count === 0) {
                     cdText.innerText = "GO!";
                     cdText.style.color = "#4CAF50";
-                    gameState = 2; // Unlock driving
+                    gameState = 2; 
                     raceStartTime = Date.now();
                 } else {
                     clearInterval(timerObj);
@@ -308,11 +303,9 @@
         }
 
         function updateUI() {
-            // Speedometer (1.3 top speed * roughly 200 multiplier looks like real KMH)
             const displaySpeed = Math.abs(speed * 200).toFixed(0);
             document.getElementById('speedometer').innerText = displaySpeed;
 
-            // Timer
             if (gameState === 2) {
                 const elapsed = Date.now() - raceStartTime;
                 const min = Math.floor(elapsed / 60000).toString().padStart(2, '0');
@@ -328,7 +321,6 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            // A. Arcade Physics (Only if racing)
             if (gameState === 2) {
                 if (keys.w) speed += acceleration;
                 if (keys.s) speed -= acceleration * 0.6; 
@@ -340,11 +332,12 @@
 
                 speed = THREE.MathUtils.clamp(speed, -maxSpeed * 0.4, maxSpeed);
 
-                // FIXED: Must be moving to steer.
                 if (Math.abs(speed) > 0.05) {
                     const direction = speed > 0 ? 1 : -1;
-                    if (keys.a) myCar.rotateY(turnSpeed * direction);
-                    if (keys.d) myCar.rotateY(-turnSpeed * direction);
+                    // FIXED STEERING: We strictly modify the raw Y rotation value. 
+                    // This creates perfect 2D turning that never flips or locks up.
+                    if (keys.a) myCar.rotation.y += turnSpeed * direction;
+                    if (keys.d) myCar.rotation.y -= turnSpeed * direction;
                 }
 
                 const forward = new THREE.Vector3(0, 0, -1);
@@ -352,27 +345,22 @@
                 forward.multiplyScalar(speed); 
                 myCar.position.add(forward); 
 
-                // FIXED: Enforce strictly flat Y coordinate
+                // Ensure the car stays flat without forcing X/Z calculations
                 myCar.position.y = 0.5; 
-                myCar.rotation.x = 0; 
-                myCar.rotation.z = 0;
 
-                // B. Checkpoint Detection
                 const targetPoint = checkpoints[nextCheckpointIndex];
-                
-                // FIXED: Measure distance strictly on X/Z axis, ignore height. Radiused to 25.
                 const dx = myCar.position.x - targetPoint.x;
                 const dz = myCar.position.z - targetPoint.z;
                 const flatDistance = Math.sqrt(dx*dx + dz*dz);
 
-                if (flatDistance < 25) {
+                if (flatDistance < 30) {
                     nextCheckpointIndex++;
                     if (nextCheckpointIndex >= numCheckpoints) {
                         nextCheckpointIndex = 0; 
                         currentLap++;
                         
                         if (currentLap > totalLaps) {
-                            gameState = 3; // Finished
+                            gameState = 3; 
                             document.getElementById('race-state').innerText = "🏁 FINISHED!";
                             document.getElementById('race-state').style.color = '#4CAF50';
                             document.getElementById('countdown-text').innerText = "FINISH";
@@ -383,16 +371,13 @@
                     }
                 }
             } else if (gameState === 3) {
-                // Auto decelerate when finished
                 speed = Math.max(0, speed - deceleration);
                 const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(myCar.quaternion).multiplyScalar(speed);
                 myCar.position.add(forward); 
             }
 
-            // Update user interface and minimap
             updateUI();
 
-            // C. Third-Person Camera Elastic Follow
             const cameraOffset = relativeCameraOffset.clone().applyMatrix4(myCar.matrixWorld);
             camera.position.lerp(cameraOffset, 0.15); 
             camera.lookAt(myCar.position);
