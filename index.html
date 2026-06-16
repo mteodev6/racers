@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Web Racing Multiplayer</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #ui-container { position: absolute; top: 15px; left: 15px; color: white; background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h3 { margin: 0 0 10px 0; color: #4CAF50; }
+        p { margin: 5px 0; font-size: 14px; }
+        #status { color: #FFC107; font-weight: bold; margin-top: 10px; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
+</head>
+<body>
+    <div id="ui-container">
+        <h3>Web Racing</h3>
+        <p>🎮 <b>Controls:</b> W, A, S, D to drive</p>
+        <p id="status">Connecting to network...</p>
+    </div>
+
+    <script>
+        // --- 1. GAME SETTINGS & STATE ---
+        const myId = 'player_' + Math.random().toString(36).substr(2, 9);
+        const players = {}; // Object to store other players' 3D meshes
+        
+        let speed = 0;
+        const maxSpeed = 0.6;
+        const acceleration = 0.015;
+        const deceleration = 0.005;
+        const turnSpeed = 0.04;
+
+        const keys = { w: false, a: false, s: false, d: false };
+
+        // --- 2. THREE.JS ENVIRONMENT SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb); // Sky blue background
+        
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(20, 40, 20);
+        scene.add(dirLight);
+
+        // Ground / Track
+        const groundGeo = new THREE.PlaneGeometry(500, 500);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x333333 }); // Asphalt grey
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        scene.add(ground);
+
+        // Grid Helper to make movement visible
+        const gridHelper = new THREE.GridHelper(500, 100, 0x000000, 0x000000);
+        gridHelper.material.opacity = 0.2;
+        gridHelper.material.transparent = true;
+        scene.add(gridHelper);
+
+        // My Car (Red Box)
+        const carGeo = new THREE.BoxGeometry(2, 1, 4);
+        const carMat = new THREE.MeshStandardMaterial({ color: 0xff3333 }); 
+        const myCar = new THREE.Mesh(carGeo, carMat);
+        myCar.position.y = 0.5; // Rest on the ground
+        scene.add(myCar);
+
+        // Camera offset for third-person view
+        const relativeCameraOffset = new THREE.Vector3(0, 5, 10);
+
+        // Input Listeners
+        window.addEventListener('keydown', (e) => {
+            if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if(e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false;
+        });
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- 3. ABLY MULTIPLAYER LOGIC ---
+        // REPLACE WITH YOUR ABLY API KEY
+        const ABLY_API_KEY = 'mWq-qg.aSAwag:CfLtHjHdS9lBnkqrB9RzytbXrCK76hPhXFoFWa8c65g'; 
+        
+        // Initialize Ably with a specific client ID for presence tracking
+        const ably = new Ably.Realtime({ key: ABLY_API_KEY, clientId: myId });
+        const channel = ably.channels.get('racing-lobby');
+
+        ably.connection.on('connected', () => {
+            document.getElementById('status').innerText = 'Online! Send this file to a friend.';
+            document.getElementById('status').style.color = '#4CAF50';
+            
+            // 1. Subscribe to incoming movement data
+            channel.subscribe('move', (message) => {
+                const data = message.data;
+                const senderId = message.clientId;
+
+                if (senderId === myId) return; // Ignore our own broadcast
+
+                // Spawn a new car if we haven't seen this player before
+                if (!players[senderId]) {
+                    const otherCarMat = new THREE.MeshStandardMaterial({ color: 0x3366ff }); // Blue for opponents
+                    const otherCar = new THREE.Mesh(carGeo, otherCarMat);
+                    otherCar.position.y = 0.5;
+                    scene.add(otherCar);
+                    players[senderId] = otherCar;
+                }
+
+                // Update opponent's position and rotation
+                players[senderId].position.set(data.x, data.y, data.z);
+                players[senderId].rotation.y = data.rotation;
+            });
+
+            // 2. Remove players from the scene when they close their browser
+            channel.presence.subscribe('leave', (member) => {
+                if (players[member.clientId]) {
+                    scene.remove(players[member.clientId]);
+                    delete players[member.clientId];
+                }
+            });
+
+            // 3. Announce that we have joined the game
+            channel.presence.enter();
+        });
+
+        // Broadcast position to the network
+        function broadcastPosition() {
+            if (ably.connection.state === 'connected') {
+                channel.publish('move', {
+                    x: myCar.position.x,
+                    y: myCar.position.y,
+                    z: myCar.position.z,
+                    rotation: myCar.rotation.y
+                });
+            }
+        }
+
+        // Send network updates 10 times a second (100ms)
+        setInterval(broadcastPosition, 100);
+
+        // --- 4. MAIN GAME LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Car Physics & Movement
+            if (keys.w) speed += acceleration;
+            if (keys.s) speed -= acceleration;
+            
+            // Friction/Deceleration when no keys are pressed
+            if (!keys.w && !keys.s) {
+                if (speed > 0) speed -= deceleration;
+                if (speed < 0) speed += deceleration;
+            }
+
+            // Cap the maximum speed
+            speed = Math.max(Math.min(speed, maxSpeed), -maxSpeed / 2);
+
+            // Steering (only allow turning if the car is actively moving)
+            if (Math.abs(speed) > 0.01) {
+                const turnDirection = speed > 0 ? 1 : -1;
+                if (keys.a) myCar.rotation.y += turnSpeed * turnDirection;
+                if (keys.d) myCar.rotation.y -= turnSpeed * turnDirection;
+            }
+
+            // Apply calculated speed to the 3D position based on current rotation
+            myCar.position.x -= Math.sin(myCar.rotation.y) * speed;
+            myCar.position.z -= Math.cos(myCar.rotation.y) * speed;
+
+            // Third-Person Camera Logic
+            const cameraOffset = relativeCameraOffset.clone().applyMatrix4(myCar.matrixWorld);
+            camera.position.lerp(cameraOffset, 0.1); // "Lerp" creates the smooth elastic camera follow effect
+            camera.lookAt(myCar.position);
+
+            // Render the scene
+            renderer.render(scene, camera);
+        }
+
+        // Start the engine
+        animate();
+    </script>
+</body>
+</html>
