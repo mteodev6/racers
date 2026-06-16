@@ -345,12 +345,13 @@ const crowdMembers = [];
             g.add(guy);
         }
     }
-    // Place grandstand near the start line
-    const startPt  = trackCurve.getPointAt(0);
-    const startTan = trackCurve.getTangentAt(0);
-    const perp     = new THREE.Vector3(-startTan.z, 0, startTan.x).normalize();
-    g.position.set(startPt.x + perp.x * (roadWidth + 10), 0.5, startPt.z + perp.z * (roadWidth + 10));
-    g.lookAt(startPt.x, 0.5, startPt.z);
+    // Place grandstand well outside the track boundary
+    const _sPt  = trackCurve.getPointAt(0);
+    const _sTan = trackCurve.getTangentAt(0);
+    const _perp = new THREE.Vector3(-_sTan.z, 0, _sTan.x).normalize();
+    // Push 60 units to the side of the start/finish line - well clear of road+walls
+    g.position.set(_sPt.x + _perp.x * 60, 0.5, _sPt.z + _perp.z * 60);
+    g.lookAt(_sPt.x, 0.5, _sPt.z);
     scene.add(g);
 })();
 
@@ -428,12 +429,16 @@ function buildCheckpointGate(t, index) {
     return { group: g, position: pt.clone(), t, panelMat: panel.material };
 }
 
+// CP0 = start/finish at t=0.
+// CP1..CP9 step backwards through t so they match the direction the car
+// is pointing (the car faces +tangent at t=0, which means increasing t).
+// Actually the ellipse goes counter-clockwise when cos/sin is used with
+// increasing angle, but the car lookAt points it along +startTan.
+// We determine the correct order at runtime by checking which t-direction
+// from CP0 the car naturally drives into first.
+// Simple reliable fix: place CPs in increasing t order (0, 0.1 … 0.9),
+// spawn car pointing in the +tangent direction, require CP1 first.
 for (let i = 0; i < NUM_CHECKPOINTS; i++) {
-    // Offset by half a step so checkpoint 0 is NOT at t=0 exactly,
-    // which prevents auto-collection at spawn.
-    // Actually we WANT checkpoint 0 at the start/finish line (t=0)
-    // but we'll seed nextCheckpointIndex=1 after spawn so we must
-    // drive the full track before crossing it.
     const t = i / NUM_CHECKPOINTS;
     checkpoints.push(buildCheckpointGate(t, i));
 }
@@ -608,22 +613,29 @@ document.getElementById('join-btn').addEventListener('click', () => {
 
     myCar = createF1Car(myColor, myName);
 
-    // Spawn slightly behind start line
-    const perpX = startTan.z, perpZ = -startTan.x;
-    const gridOff  = (Math.random() - 0.5) * 12;
-    const depthOff = 5 + Math.random() * 15;
+    // Spawn safely on the track, 8 units behind CP0 in the driving direction.
+    // The car must drive FORWARD (in +tangent direction) toward CP1, CP2 … CP0.
+    // Offset slightly to the left so multiple players don't overlap.
+    const perpX = -startTan.z, perpZ = startTan.x; // left-hand perp
+    const gridOff = (Math.random() - 0.5) * 10; // small lateral scatter
     myCar.position.set(
-        startPt.x - startTan.x * depthOff + perpX * gridOff,
+        startPt.x - startTan.x * 8 + perpX * gridOff,
         0.5,
-        startPt.z - startTan.z * depthOff + perpZ * gridOff
+        startPt.z - startTan.z * 8 + perpZ * gridOff
     );
-    myCar.lookAt(startPt.x + startTan.x, 0.5, startPt.z + startTan.z);
+    // Face FORWARD along the track (toward increasing t = toward CP1)
+    myCar.lookAt(
+        startPt.x + startTan.x * 20,
+        0.5,
+        startPt.z + startTan.z * 20
+    );
     scene.add(myCar);
 
-    // Start from CP1 so we must drive the full loop to hit CP0 (finish)
+    // Must hit CP1 first, then CP2…CP9, then CP0 to complete a lap
     nextCheckpointIndex = 1;
     lapsCompleted  = 0;
     currentLap     = 1;
+    document.getElementById('race-state').innerText = `Lap 1 / ${totalLaps}`;
 
     gameState = 0;
     initAudio();
