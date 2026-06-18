@@ -485,15 +485,17 @@ const crowdMembers = [];
 // ============================================================
 // 12. CHECKPOINTS — invisible logic only (no physical gates)
 // ============================================================
-// Car spawns ahead of the line facing +tangent (forward, increasing t),
-// so checkpoints run in INCREASING t order to match the direction the car
-// drives: CP1 at t=0.1, CP2 at t=0.2 ... CP9 at t=0.9, then back to CP0 (t=0) to finish.
+// Car spawns ahead of the line facing +tangent (forward, increasing t).
+// Checkpoint POSITIONS still run in increasing t order around the track,
+// but the NUMBERING is reversed: the checkpoint hit first (t=0.1) is
+// labelled CP9, and the one hit last before the finish (t=0.9) is CP1.
 const NUM_CHECKPOINTS = 10;
 const CHECKPOINT_RADIUS = 22;
 const checkpoints = [];
 for (let i = 0; i < NUM_CHECKPOINTS; i++) {
     const t = i / NUM_CHECKPOINTS;
-    checkpoints.push({ position: trackCurve.getPointAt(t), t, index: i });
+    const label = i === 0 ? 0 : NUM_CHECKPOINTS - i; // reverse numbering, keep CP0 as finish
+    checkpoints.push({ position: trackCurve.getPointAt(t), t, index: label });
 }
 
 // Start / finish line — the ONLY physical marker on the track
