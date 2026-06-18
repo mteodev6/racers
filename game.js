@@ -688,11 +688,11 @@ function getGridSlotPosition(slotIndex) {
 
     const perpX = -startTan.z, perpZ = startTan.x; // left-hand perp
     const colOffset = (col - (GRID_COLS - 1) / 2) * GRID_COL_SPACING;
-    const rowOffset = 6 + row * GRID_ROW_SPACING; // start a bit ahead of the line, then stagger forward
+    const rowOffset = 6 + row * GRID_ROW_SPACING; // start a bit behind the line, then stagger further back
 
     return {
-        x: startPt.x + startTan.x * rowOffset + perpX * colOffset,
-        z: startPt.z + startTan.z * rowOffset + perpZ * colOffset
+        x: startPt.x - startTan.x * rowOffset + perpX * colOffset,
+        z: startPt.z - startTan.z * rowOffset + perpZ * colOffset
     };
 }
 
@@ -730,8 +730,8 @@ document.getElementById('join-btn').addEventListener('click', () => {
     const slotPos = getGridSlotPosition(mySlot);
     myCar.position.set(slotPos.x, 0.5, slotPos.z);
 
-    // Face further along +tangent (same direction the grid is offset),
-    // so the car looks ahead down the track, not back at the line
+    // Car is now behind the line — face FORWARD toward it (+tangent direction),
+    // so the car is looking at the start line from behind
     myCar.lookAt(
         startPt.x + startTan.x * 40,
         0.5,
