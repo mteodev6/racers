@@ -485,14 +485,14 @@ const crowdMembers = [];
 // ============================================================
 // 12. CHECKPOINTS — invisible logic only (no physical gates)
 // ============================================================
-// Car spawns facing -tangent (flipped 180°), so checkpoints run in
-// DECREASING t order to match the direction the car drives:
-// CP1 at t=0.9, CP2 at t=0.8 ... CP9 at t=0.1, then back to CP0 (t=0) to finish.
+// Car spawns ahead of the line facing +tangent (forward, increasing t),
+// so checkpoints run in INCREASING t order to match the direction the car
+// drives: CP1 at t=0.1, CP2 at t=0.2 ... CP9 at t=0.9, then back to CP0 (t=0) to finish.
 const NUM_CHECKPOINTS = 10;
 const CHECKPOINT_RADIUS = 22;
 const checkpoints = [];
 for (let i = 0; i < NUM_CHECKPOINTS; i++) {
-    const t = i === 0 ? 0 : 1 - (i / NUM_CHECKPOINTS);
+    const t = i / NUM_CHECKPOINTS;
     checkpoints.push({ position: trackCurve.getPointAt(t), t, index: i });
 }
 
@@ -728,11 +728,12 @@ document.getElementById('join-btn').addEventListener('click', () => {
     const slotPos = getGridSlotPosition(mySlot);
     myCar.position.set(slotPos.x, 0.5, slotPos.z);
 
-    // Face the OPPOSITE direction (-tangent) — flipped 180°
+    // Face further along +tangent (same direction the grid is offset),
+    // so the car looks ahead down the track, not back at the line
     myCar.lookAt(
-        startPt.x - startTan.x * 20,
+        startPt.x + startTan.x * 40,
         0.5,
-        startPt.z - startTan.z * 20
+        startPt.z + startTan.z * 40
     );
     scene.add(myCar);
 
