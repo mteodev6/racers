@@ -731,11 +731,11 @@ document.getElementById('join-btn').addEventListener('click', () => {
     myCar.position.set(slotPos.x, 0.5, slotPos.z);
 
     // Car is now behind the line — face FORWARD toward it (+tangent direction),
-    // so the car is looking at the start line from behind
+    // rotated by 180 degrees (looking away from start line)
     myCar.lookAt(
-        startPt.x + startTan.x * 40,
+        startPt.x - startTan.x * 40,
         0.5,
-        startPt.z + startTan.z * 40
+        startPt.z - startTan.z * 40
     );
     scene.add(myCar);
 
