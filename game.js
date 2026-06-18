@@ -178,21 +178,29 @@ function generateTrackPoints() {
         }
     }
 
-    // --- Insert a long straight at the start ---
-    // Duplicate the start point further back along its tangent direction,
-    // and pull the next point onto that same line, so the player gets a
-    // long, unbroken straight before the first corner.
-    const p0 = raw[0].clone();
-    const p1 = raw[1].clone();
-    const dir = new THREE.Vector3().subVectors(p1, p0).normalize();
-    const launch  = p0.clone().sub(dir.clone().multiplyScalar(45));
-    const aheadPt = p0.clone().add(dir.clone().multiplyScalar(55));
-    raw[1].x = THREE.MathUtils.lerp(raw[1].x, aheadPt.x, 0.6);
-    raw[1].z = THREE.MathUtils.lerp(raw[1].z, aheadPt.z, 0.6);
+    // --- Flatten the points around the start/finish into a straight ---
+    // Point 0 is the start/finish line. Instead of inserting a duplicate
+    // "launch" point (which created a zero-length seam and caused geometry
+    // glitches), we directly reposition point 0, the point before it, and
+    // the point after it so they all sit on one straight line through the
+    // start. This gives a clean straight BEFORE and AFTER the line with no
+    // duplicate/degenerate points anywhere in the loop.
+    const last = raw[raw.length - 1];
+    const p0   = raw[0];
+    const p1   = raw[1];
 
-    const finalPoints = [launch, p0, ...raw.slice(1)];
-    finalPoints.push(launch.clone()); // close loop
-    return finalPoints;
+    // Direction of travel through the start, based on the original neighbours
+    const dir = new THREE.Vector3().subVectors(p1, last).normalize();
+
+    // Push the previous point back along -dir (straight BEFORE the line)
+    last.x = p0.x - dir.x * 50;
+    last.z = p0.z - dir.z * 50;
+
+    // Push the next point forward along +dir (straight AFTER the line)
+    p1.x = p0.x + dir.x * 50;
+    p1.z = p0.z + dir.z * 50;
+
+    return raw; // closed=true on the curve handles the loop; no duplicate point needed
 }
 
 const trackPoints = generateTrackPoints();
@@ -215,12 +223,25 @@ const cl    = new THREE.Mesh(clGeo, new THREE.MeshStandardMaterial({ color: 0xff
 cl.position.y = 0.15;
 scene.add(cl);
 
-// Dashed start straight markings (visual flair on the long opening straight)
+// Dashed straight markings on both sides of the start/finish line
 (function buildStraightDashes() {
     const dashGeo = new THREE.BoxGeometry(1, 0.05, 3);
     const dashMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
-    for (let i = 0; i < 12; i++) {
-        const t = (i / 12) * 0.05; // first ~5% of track = the launch straight
+    const ZONE = 0.04; // fraction of track length covered on each side of t=0
+    const COUNT = 10;
+    // After the line (t = 0 → ZONE)
+    for (let i = 1; i <= COUNT; i++) {
+        const t = (i / COUNT) * ZONE;
+        const pt  = trackCurve.getPointAt(t);
+        const tan = trackCurve.getTangentAt(t);
+        const dash = new THREE.Mesh(dashGeo, dashMat);
+        dash.position.set(pt.x, 0.18, pt.z);
+        dash.lookAt(pt.x + tan.x, 0.18, pt.z + tan.z);
+        scene.add(dash);
+    }
+    // Before the line (t = 1-ZONE → 1)
+    for (let i = 1; i <= COUNT; i++) {
+        const t = 1 - (i / COUNT) * ZONE;
         const pt  = trackCurve.getPointAt(t);
         const tan = trackCurve.getTangentAt(t);
         const dash = new THREE.Mesh(dashGeo, dashMat);
@@ -230,12 +251,16 @@ scene.add(cl);
     }
 })();
 
-// Kerbs
+// Kerbs (skipped near the start/finish straight, which has its own dashed markings)
 (function buildKerbs() {
     const N = 160;
     const kerbGeo = new THREE.BoxGeometry(2, 0.15, 3);
+    const STRAIGHT_ZONE = 0.045; // fraction of track length to skip on each side of t=0
     for (let i = 0; i < N; i++) {
-        const t   = i / N;
+        const t = i / N;
+        // Skip kerbs on the straight that runs through the start/finish line
+        if (t < STRAIGHT_ZONE || t > 1 - STRAIGHT_ZONE) continue;
+
         const pt  = trackCurve.getPointAt(t);
         const tan = trackCurve.getTangentAt(t);
         const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
@@ -462,14 +487,14 @@ const crowdMembers = [];
 // ============================================================
 // 12. CHECKPOINTS — invisible logic only (no physical gates)
 // ============================================================
-// Car spawns facing -tangent (back toward the launch point), so checkpoints
-// must run in DECREASING t order to match the direction the car drives:
-// CP1 at t=0.9, CP2 at t=0.8 ... CP9 at t=0.1, then back to CP0 (t=0) to finish.
+// Car spawns facing +tangent (forward, in the direction of increasing t),
+// so checkpoints run in INCREASING t order to match the direction the car
+// drives: CP1 at t=0.1, CP2 at t=0.2 ... CP9 at t=0.9, then back to CP0 (t=0) to finish.
 const NUM_CHECKPOINTS = 10;
 const CHECKPOINT_RADIUS = 22;
 const checkpoints = [];
 for (let i = 0; i < NUM_CHECKPOINTS; i++) {
-    const t = i === 0 ? 0 : 1 - (i / NUM_CHECKPOINTS);
+    const t = i / NUM_CHECKPOINTS;
     checkpoints.push({ position: trackCurve.getPointAt(t), t, index: i });
 }
 
@@ -650,6 +675,27 @@ setInterval(broadcastPosition, 100);
 // ============================================================
 // 16. UI & EVENTS
 // ============================================================
+// 4 fixed grid spawn slots, arranged 2-wide x 2-deep just behind the start line,
+// on the straight. Slot 0 is pole position (front-left).
+const GRID_ROWS = 2;        // how many rows deep
+const GRID_COLS = 2;        // how many cars per row
+const GRID_ROW_SPACING = 9; // distance between rows, along the track
+const GRID_COL_SPACING = 7; // distance between cars side-by-side
+
+function getGridSlotPosition(slotIndex) {
+    const row = Math.floor(slotIndex / GRID_COLS); // 0 = front row
+    const col = slotIndex % GRID_COLS;             // 0 = left, 1 = right
+
+    const perpX = -startTan.z, perpZ = startTan.x; // left-hand perp
+    const colOffset = (col - (GRID_COLS - 1) / 2) * GRID_COL_SPACING;
+    const rowOffset = 6 + row * GRID_ROW_SPACING; // start a bit behind the line, then stagger back
+
+    return {
+        x: startPt.x - startTan.x * rowOffset + perpX * colOffset,
+        z: startPt.z - startTan.z * rowOffset + perpZ * colOffset
+    };
+}
+
 document.getElementById('join-btn').addEventListener('click', () => {
     myName  = document.getElementById('player-name').value || 'Racer';
     myColor = document.getElementById('player-color').value;
@@ -659,19 +705,16 @@ document.getElementById('join-btn').addEventListener('click', () => {
 
     myCar = createF1Car(myColor, myName);
 
-    // Spawn 8 units behind the start line, on the opening straight
-    const perpX = -startTan.z, perpZ = startTan.x; // left-hand perp
-    const gridOff = (Math.random() - 0.5) * 10;
-    myCar.position.set(
-        startPt.x - startTan.x * 8 + perpX * gridOff,
-        0.5,
-        startPt.z - startTan.z * 8 + perpZ * gridOff
-    );
-    // Face the OPPOSITE direction from before — look back along -tangent
+    // Pick one of the 4 grid slots at random for this player
+    const mySlot = Math.floor(Math.random() * (GRID_ROWS * GRID_COLS));
+    const slotPos = getGridSlotPosition(mySlot);
+    myCar.position.set(slotPos.x, 0.5, slotPos.z);
+
+    // Face FORWARD along the track, in the direction of travel (+tangent)
     myCar.lookAt(
-        startPt.x - startTan.x * 20,
+        startPt.x + startTan.x * 20,
         0.5,
-        startPt.z - startTan.z * 20
+        startPt.z + startTan.z * 20
     );
     scene.add(myCar);
 
