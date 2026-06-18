@@ -137,38 +137,31 @@ function generateTrackPoints() {
         let radiusScale = 1;
 
         if (archetype === 'oval') {
-            radiusScale = 1; // plain ellipse, jitter added below
+            radiusScale = 1;
         } else if (archetype === 'kidney') {
-            // Pinch one side inward to create a kidney/D shape
             radiusScale = 1 - 0.25 * Math.max(0, Math.cos(angle - Math.PI / 2));
         } else if (archetype === 'figure_bulge') {
-            // Two gentle bulges opposite each other
             radiusScale = 1 + 0.18 * Math.sin(angle * 2);
         } else if (archetype === 'rounded_square') {
-            // Push toward a superellipse-ish square shape
             const cosA = Math.cos(angle), sinA = Math.sin(angle);
             const squareness = 1 / Math.pow(Math.pow(Math.abs(cosA), 4) + Math.pow(Math.abs(sinA), 4), 0.25);
             radiusScale = 0.6 + 0.4 * squareness;
         }
 
-        // Mild per-point jitter (kept small so curvature stays gentle)
         const jitter = 0.93 + Math.random() * 0.14;
         const x = Math.cos(angle) * rx * radiusScale * jitter;
         const z = Math.sin(angle) * rz * radiusScale * jitter;
         raw.push(new THREE.Vector3(x, 0, z));
     }
 
-    // --- Smooth out any remaining sharp corners ---
-    // For each point, check the angle formed with its neighbours. If it's
-    // too sharp (a hairpin), pull the point toward the midpoint of its
-    // neighbours to flatten the corner instead of leaving a sudden direction change.
+    // --- Smooth out sharp corners ---
     for (let pass = 0; pass < 2; pass++) {
         for (let i = 0; i < raw.length; i++) {
             const prev = raw[(i - 1 + raw.length) % raw.length];
             const cur  = raw[i];
             const next = raw[(i + 1) % raw.length];
-            const interior = angleBetween(prev, cur, next); // PI = straight, smaller = sharper
-            const MIN_ANGLE = Math.PI * 0.62; // ~112°: anything sharper gets relaxed
+            const interior = angleBetween(prev, cur, next);
+            const MIN_ANGLE = Math.PI * 0.62;
             if (interior < MIN_ANGLE) {
                 const mx = (prev.x + next.x) / 2;
                 const mz = (prev.z + next.z) / 2;
@@ -178,29 +171,34 @@ function generateTrackPoints() {
         }
     }
 
-    // --- Flatten the points around the start/finish into a straight ---
-    // Point 0 is the start/finish line. Instead of inserting a duplicate
-    // "launch" point (which created a zero-length seam and caused geometry
-    // glitches), we directly reposition point 0, the point before it, and
-    // the point after it so they all sit on one straight line through the
-    // start. This gives a clean straight BEFORE and AFTER the line with no
-    // duplicate/degenerate points anywhere in the loop.
-    const last = raw[raw.length - 1];
-    const p0   = raw[0];
-    const p1   = raw[1];
+    // --- Build an explicit straight through the start, as real inserted points ---
+    // We take the original point 0 as the centre of the start/finish line,
+    // compute the direction from the point before it to the point after it,
+    // and INSERT two brand new points (not just nudge existing ones) exactly
+    // on that line, well clear of the curve's natural bend. This guarantees
+    // there is a real straight segment physically present in the point list,
+    // verifiable independent of how Catmull-Rom's arc-length table behaves.
+    const beforeIdx = raw.length - 1;
+    const afterIdx  = 1;
+    const before = raw[beforeIdx];
+    const start  = raw[0];
+    const after  = raw[afterIdx];
 
-    // Direction of travel through the start, based on the original neighbours
-    const dir = new THREE.Vector3().subVectors(p1, last).normalize();
+    const dir = new THREE.Vector3().subVectors(after, before).normalize();
 
-    // Push the previous point back along -dir (straight BEFORE the line)
-    last.x = p0.x - dir.x * 50;
-    last.z = p0.z - dir.z * 50;
+    // Points placed symmetrically around the start point, ON the straight line
+    const preStraight  = start.clone().sub(dir.clone().multiplyScalar(60));
+    const postStraight = start.clone().add(dir.clone().multiplyScalar(60));
 
-    // Push the next point forward along +dir (straight AFTER the line)
-    p1.x = p0.x + dir.x * 50;
-    p1.z = p0.z + dir.z * 50;
+    // Final point order:
+    // [ ...track points after the start, going around ..., preStraight, START(t=0), postStraight, ...rest ]
+    // We rebuild the array so index 0 is guaranteed to be the start point,
+    // with preStraight immediately before it (end of array, since closed)
+    // and postStraight immediately after it (index 1).
+    const middle = raw.slice(2, beforeIdx); // everything except start/before/after
+    const finalPoints = [start, postStraight, ...middle, preStraight];
 
-    return raw; // closed=true on the curve handles the loop; no duplicate point needed
+    return finalPoints;
 }
 
 const trackPoints = generateTrackPoints();
@@ -695,6 +693,26 @@ function getGridSlotPosition(slotIndex) {
         z: startPt.z - startTan.z * rowOffset + perpZ * colOffset
     };
 }
+
+// Paint a visible numbered box on the tarmac for each of the 4 grid slots,
+// so the grid is actually visible even though only one car occupies it locally.
+(function paintGridSlots() {
+    const boxGeo = new THREE.BoxGeometry(4, 0.05, 5);
+    const boxMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.5
+    });
+    for (let i = 0; i < GRID_ROWS * GRID_COLS; i++) {
+        const pos = getGridSlotPosition(i);
+        const box = new THREE.Mesh(boxGeo, boxMat);
+        box.position.set(pos.x, 0.2, pos.z);
+        box.lookAt(pos.x + startTan.x, 0.2, pos.z + startTan.z);
+        scene.add(box);
+
+        const label = makeTextSprite(`${i + 1}`, [3, 3, 1]);
+        label.position.set(pos.x, 2.5, pos.z);
+        scene.add(label);
+    }
+})();
 
 document.getElementById('join-btn').addEventListener('click', () => {
     myName  = document.getElementById('player-name').value || 'Racer';
