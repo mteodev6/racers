@@ -485,14 +485,14 @@ const crowdMembers = [];
 // ============================================================
 // 12. CHECKPOINTS — invisible logic only (no physical gates)
 // ============================================================
-// Car spawns facing +tangent (forward, in the direction of increasing t),
-// so checkpoints run in INCREASING t order to match the direction the car
-// drives: CP1 at t=0.1, CP2 at t=0.2 ... CP9 at t=0.9, then back to CP0 (t=0) to finish.
+// Car spawns facing -tangent (flipped 180°), so checkpoints run in
+// DECREASING t order to match the direction the car drives:
+// CP1 at t=0.9, CP2 at t=0.8 ... CP9 at t=0.1, then back to CP0 (t=0) to finish.
 const NUM_CHECKPOINTS = 10;
 const CHECKPOINT_RADIUS = 22;
 const checkpoints = [];
 for (let i = 0; i < NUM_CHECKPOINTS; i++) {
-    const t = i / NUM_CHECKPOINTS;
+    const t = i === 0 ? 0 : 1 - (i / NUM_CHECKPOINTS);
     checkpoints.push({ position: trackCurve.getPointAt(t), t, index: i });
 }
 
@@ -686,11 +686,11 @@ function getGridSlotPosition(slotIndex) {
 
     const perpX = -startTan.z, perpZ = startTan.x; // left-hand perp
     const colOffset = (col - (GRID_COLS - 1) / 2) * GRID_COL_SPACING;
-    const rowOffset = 6 + row * GRID_ROW_SPACING; // start a bit behind the line, then stagger back
+    const rowOffset = 6 + row * GRID_ROW_SPACING; // start a bit ahead of the line, then stagger forward
 
     return {
-        x: startPt.x - startTan.x * rowOffset + perpX * colOffset,
-        z: startPt.z - startTan.z * rowOffset + perpZ * colOffset
+        x: startPt.x + startTan.x * rowOffset + perpX * colOffset,
+        z: startPt.z + startTan.z * rowOffset + perpZ * colOffset
     };
 }
 
@@ -728,11 +728,11 @@ document.getElementById('join-btn').addEventListener('click', () => {
     const slotPos = getGridSlotPosition(mySlot);
     myCar.position.set(slotPos.x, 0.5, slotPos.z);
 
-    // Face FORWARD along the track, in the direction of travel (+tangent)
+    // Face the OPPOSITE direction (-tangent) — flipped 180°
     myCar.lookAt(
-        startPt.x + startTan.x * 20,
+        startPt.x - startTan.x * 20,
         0.5,
-        startPt.z + startTan.z * 20
+        startPt.z - startTan.z * 20
     );
     scene.add(myCar);
 
