@@ -1,5 +1,5 @@
 // ============================================================
-// F1 RACER — full rewrite
+// F1 RACER — v2
 // ============================================================
 
 // --- 1. IDENTITY ---
@@ -16,6 +16,8 @@ const totalLaps = 3;
 let lapsCompleted = 0;
 let currentLap = 1;
 let nextCheckpointIndex = 0;
+let bestLapTime = null;
+let lapStartTime = 0;
 
 // --- 3. PHYSICS ---
 let speed = 0;
@@ -24,6 +26,7 @@ const acceleration  = 0.03;
 const deceleration  = 0.01;
 const turnSpeed     = 0.03;
 let barrierHitCooldown = 0;
+let boostTimer = 0; // frames of boost remaining
 const keys = { w: false, a: false, s: false, d: false };
 
 // ============================================================
@@ -68,6 +71,11 @@ function playFinishFanfare() {
     setTimeout(() => playBeep(659, 0.6), 400);
 }
 
+function playBoostSound() {
+    playBeep(220, 0.08, 'sawtooth');
+    setTimeout(() => playBeep(440, 0.12, 'sawtooth'), 60);
+}
+
 // ============================================================
 // 5. THREE.JS SCENE
 // ============================================================
@@ -91,7 +99,7 @@ scene.add(dirLight);
 
 // Ground
 const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(1000, 1000),
+    new THREE.PlaneGeometry(1400, 1400),
     new THREE.MeshStandardMaterial({ color: 0x2d862d })
 );
 ground.rotation.x = -Math.PI / 2;
@@ -103,36 +111,98 @@ scene.add(ground);
 // ============================================================
 const roadWidth = 28;
 
-function generateTrackPoints() {
-    // Base shape: roughly oval with randomised bulges
-    // All corners are kept gentle (no hairpins) by limiting how far
-    // control points deviate from the base ellipse.
-    const basePoints = [];
-    const N = 12; // number of control points
-    const rx = 160 + (Math.random() - 0.5) * 40;
-    const rz = 140 + (Math.random() - 0.5) * 40;
+// Track "archetypes" so each generated map feels structurally different,
+// not just a jittered circle every time.
+const TRACK_ARCHETYPES = ['oval', 'kidney', 'figure_bulge', 'rounded_square'];
 
+function angleBetween(a, b, c) {
+    // interior angle at point b formed by a-b-c, in radians (PI = straight line)
+    const v1x = a.x - b.x, v1z = a.z - b.z;
+    const v2x = c.x - b.x, v2z = c.z - b.z;
+    const dot = v1x * v2x + v1z * v2z;
+    const m1  = Math.hypot(v1x, v1z), m2 = Math.hypot(v2x, v2z);
+    if (m1 === 0 || m2 === 0) return Math.PI;
+    return Math.acos(THREE.MathUtils.clamp(dot / (m1 * m2), -1, 1));
+}
+
+function generateTrackPoints() {
+    const archetype = TRACK_ARCHETYPES[Math.floor(Math.random() * TRACK_ARCHETYPES.length)];
+    const N  = 10 + Math.floor(Math.random() * 4); // 10-13 control points
+    const rx = 150 + Math.random() * 50;
+    const rz = 130 + Math.random() * 50;
+
+    let raw = [];
     for (let i = 0; i < N; i++) {
-        const angle  = (i / N) * Math.PI * 2;
-        // Randomise radius per point, but keep deviation small so corners stay driveable
-        const jitter = 0.85 + Math.random() * 0.30;
-        const x = Math.cos(angle) * rx * jitter;
-        const z = Math.sin(angle) * rz * jitter;
-        basePoints.push(new THREE.Vector3(x, 0, z));
+        const angle = (i / N) * Math.PI * 2;
+        let radiusScale = 1;
+
+        if (archetype === 'oval') {
+            radiusScale = 1; // plain ellipse, jitter added below
+        } else if (archetype === 'kidney') {
+            // Pinch one side inward to create a kidney/D shape
+            radiusScale = 1 - 0.25 * Math.max(0, Math.cos(angle - Math.PI / 2));
+        } else if (archetype === 'figure_bulge') {
+            // Two gentle bulges opposite each other
+            radiusScale = 1 + 0.18 * Math.sin(angle * 2);
+        } else if (archetype === 'rounded_square') {
+            // Push toward a superellipse-ish square shape
+            const cosA = Math.cos(angle), sinA = Math.sin(angle);
+            const squareness = 1 / Math.pow(Math.pow(Math.abs(cosA), 4) + Math.pow(Math.abs(sinA), 4), 0.25);
+            radiusScale = 0.6 + 0.4 * squareness;
+        }
+
+        // Mild per-point jitter (kept small so curvature stays gentle)
+        const jitter = 0.93 + Math.random() * 0.14;
+        const x = Math.cos(angle) * rx * radiusScale * jitter;
+        const z = Math.sin(angle) * rz * radiusScale * jitter;
+        raw.push(new THREE.Vector3(x, 0, z));
     }
-    // Close the loop
-    basePoints.push(basePoints[0].clone());
-    return basePoints;
+
+    // --- Smooth out any remaining sharp corners ---
+    // For each point, check the angle formed with its neighbours. If it's
+    // too sharp (a hairpin), pull the point toward the midpoint of its
+    // neighbours to flatten the corner instead of leaving a sudden direction change.
+    for (let pass = 0; pass < 2; pass++) {
+        for (let i = 0; i < raw.length; i++) {
+            const prev = raw[(i - 1 + raw.length) % raw.length];
+            const cur  = raw[i];
+            const next = raw[(i + 1) % raw.length];
+            const interior = angleBetween(prev, cur, next); // PI = straight, smaller = sharper
+            const MIN_ANGLE = Math.PI * 0.62; // ~112°: anything sharper gets relaxed
+            if (interior < MIN_ANGLE) {
+                const mx = (prev.x + next.x) / 2;
+                const mz = (prev.z + next.z) / 2;
+                cur.x = THREE.MathUtils.lerp(cur.x, mx, 0.35);
+                cur.z = THREE.MathUtils.lerp(cur.z, mz, 0.35);
+            }
+        }
+    }
+
+    // --- Insert a long straight at the start ---
+    // Duplicate the start point further back along its tangent direction,
+    // and pull the next point onto that same line, so the player gets a
+    // long, unbroken straight before the first corner.
+    const p0 = raw[0].clone();
+    const p1 = raw[1].clone();
+    const dir = new THREE.Vector3().subVectors(p1, p0).normalize();
+    const launch  = p0.clone().sub(dir.clone().multiplyScalar(45));
+    const aheadPt = p0.clone().add(dir.clone().multiplyScalar(55));
+    raw[1].x = THREE.MathUtils.lerp(raw[1].x, aheadPt.x, 0.6);
+    raw[1].z = THREE.MathUtils.lerp(raw[1].z, aheadPt.z, 0.6);
+
+    const finalPoints = [launch, p0, ...raw.slice(1)];
+    finalPoints.push(launch.clone()); // close loop
+    return finalPoints;
 }
 
 const trackPoints = generateTrackPoints();
 const trackCurve  = new THREE.CatmullRomCurve3(trackPoints);
 trackCurve.closed = true;
 trackCurve.curveType = 'catmullrom';
-trackCurve.tension   = 0.4; // higher tension = smoother corners
+trackCurve.tension   = 0.55; // higher = smoother, gentler corners
 
 // Road surface
-const roadGeo = new THREE.TubeGeometry(trackCurve, 500, roadWidth / 2, 8, true);
+const roadGeo = new THREE.TubeGeometry(trackCurve, 600, roadWidth / 2, 8, true);
 const road    = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ color: 0x222222 }));
 road.scale.set(1, 0.02, 1);
 road.position.y = 0.1;
@@ -140,14 +210,29 @@ road.receiveShadow = true;
 scene.add(road);
 
 // White centreline
-const clGeo = new THREE.TubeGeometry(trackCurve, 500, 0.2, 8, true);
+const clGeo = new THREE.TubeGeometry(trackCurve, 600, 0.2, 8, true);
 const cl    = new THREE.Mesh(clGeo, new THREE.MeshStandardMaterial({ color: 0xffffff }));
 cl.position.y = 0.15;
 scene.add(cl);
 
+// Dashed start straight markings (visual flair on the long opening straight)
+(function buildStraightDashes() {
+    const dashGeo = new THREE.BoxGeometry(1, 0.05, 3);
+    const dashMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    for (let i = 0; i < 12; i++) {
+        const t = (i / 12) * 0.05; // first ~5% of track = the launch straight
+        const pt  = trackCurve.getPointAt(t);
+        const tan = trackCurve.getTangentAt(t);
+        const dash = new THREE.Mesh(dashGeo, dashMat);
+        dash.position.set(pt.x, 0.18, pt.z);
+        dash.lookAt(pt.x + tan.x, 0.18, pt.z + tan.z);
+        scene.add(dash);
+    }
+})();
+
 // Kerbs
 (function buildKerbs() {
-    const N = 150;
+    const N = 160;
     const kerbGeo = new THREE.BoxGeometry(2, 0.15, 3);
     for (let i = 0; i < N; i++) {
         const t   = i / N;
@@ -170,10 +255,10 @@ scene.add(cl);
 })();
 
 // ============================================================
-// 7. TRACK BOUNDARY WALLS  (visual Armco barriers, collision via track-distance)
+// 7. TRACK BOUNDARY WALLS (visual Armco; collision via track-distance check)
 // ============================================================
 (function buildBoundaryWalls() {
-    const N      = 120;
+    const N      = 130;
     const wallH  = 1.0;
     const wallMat = new THREE.MeshStandardMaterial({ color: 0xbbbbbb, roughness: 0.7 });
 
@@ -201,15 +286,14 @@ scene.add(cl);
 })();
 
 // ============================================================
-// 8. TYRE BARRIERS (at a few corners)
+// 8. TYRE BARRIERS (placed away from the opening straight)
 // ============================================================
 const barriers = [];
 (function buildTyreBarriers() {
-    // Place barriers at t=0.20, 0.50, 0.75 on the inside of curves
     const zones = [
-        { t: 0.20, count: 12 },
-        { t: 0.50, count: 10 },
-        { t: 0.75, count: 12 },
+        { t: 0.35, count: 10 },
+        { t: 0.55, count: 10 },
+        { t: 0.80, count: 10 },
     ];
     const tyreGeo  = new THREE.CylinderGeometry(1.0, 1.0, 1.2, 10);
     const tyreMats = [
@@ -220,7 +304,7 @@ const barriers = [];
 
     for (const zone of zones) {
         for (let i = 0; i < zone.count; i++) {
-            const t    = zone.t + (i / zone.count) * 0.06 - 0.03;
+            const t    = zone.t + (i / zone.count) * 0.05 - 0.025;
             const pt   = trackCurve.getPointAt((t + 1) % 1);
             const tan  = trackCurve.getTangentAt((t + 1) % 1);
             const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
@@ -250,7 +334,7 @@ const barriers = [];
 })();
 
 // ============================================================
-// 9. TRAFFIC CONES  (chicane obstacles)
+// 9. TRAFFIC CONES (chicane, kept off the opening straight)
 // ============================================================
 const cones = [];
 (function buildCones() {
@@ -261,7 +345,7 @@ const cones = [];
 
     const N = 10;
     for (let i = 0; i < N; i++) {
-        const t    = 0.38 + (i / N) * 0.10;
+        const t    = 0.45 + (i / N) * 0.10;
         const pt   = trackCurve.getPointAt(t);
         const tan  = trackCurve.getTangentAt(t);
         const perp = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
@@ -286,11 +370,11 @@ const cones = [];
 })();
 
 // ============================================================
-// 10. SPEED BUMPS
+// 10. SPEED BUMPS (kept off the opening straight)
 // ============================================================
 const speedBumps = [];
 (function buildSpeedBumps() {
-    const bumpTs  = [0.28, 0.58, 0.82];
+    const bumpTs  = [0.30, 0.62, 0.88];
     const bumpGeo = new THREE.BoxGeometry(roadWidth * 0.35, 0.3, 1.5);
     const bumpMat = new THREE.MeshStandardMaterial({ color: 0xffdd00 });
 
@@ -307,6 +391,27 @@ const speedBumps = [];
 })();
 
 // ============================================================
+// 10b. BOOST PADS (new feature — short burst of speed)
+// ============================================================
+const boostPads = [];
+(function buildBoostPads() {
+    const boostTs = [0.18, 0.70];
+    const padGeo  = new THREE.BoxGeometry(roadWidth * 0.6, 0.1, 4);
+    const padMat  = new THREE.MeshStandardMaterial({
+        color: 0x00ffaa, emissive: 0x00ffaa, emissiveIntensity: 0.6, transparent: true, opacity: 0.75
+    });
+    for (const t of boostTs) {
+        const pt  = trackCurve.getPointAt(t);
+        const tan = trackCurve.getTangentAt(t);
+        const pad = new THREE.Mesh(padGeo, padMat);
+        pad.position.set(pt.x, 0.2, pt.z);
+        pad.lookAt(pt.x + tan.x, 0.2, pt.z + tan.z);
+        scene.add(pad);
+        boostPads.push({ mesh: pad, position: pt.clone(), cooldown: 0 });
+    }
+})();
+
+// ============================================================
 // 11. SCENERY — Trees & Grandstand
 // ============================================================
 const treeTrunkGeo = new THREE.CylinderGeometry(0.5, 0.8, 3, 6);
@@ -314,9 +419,9 @@ const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x5c4033 });
 const treeTopGeo   = new THREE.ConeGeometry(2.5, 6, 8);
 const treeTopMat   = new THREE.MeshStandardMaterial({ color: 0x1e5631 });
 
-for (let i = 0; i < 120; i++) {
+for (let i = 0; i < 130; i++) {
     const angle  = Math.random() * Math.PI * 2;
-    const radius = 210 + Math.random() * 120;
+    const radius = 230 + Math.random() * 140;
     const trunk  = new THREE.Mesh(treeTrunkGeo, treeTrunkMat);
     trunk.position.set(Math.cos(angle) * radius, 1.5, Math.sin(angle) * radius);
     trunk.castShadow = true;
@@ -345,23 +450,42 @@ const crowdMembers = [];
             g.add(guy);
         }
     }
-    // Place grandstand well outside the track boundary
-    const _sPt  = trackCurve.getPointAt(0);
-    const _sTan = trackCurve.getTangentAt(0);
+    // Place grandstand well clear of the track, beside the opening straight
+    const _sPt  = trackCurve.getPointAt(0.02);
+    const _sTan = trackCurve.getTangentAt(0.02);
     const _perp = new THREE.Vector3(-_sTan.z, 0, _sTan.x).normalize();
-    // Push 60 units to the side of the start/finish line - well clear of road+walls
-    g.position.set(_sPt.x + _perp.x * 60, 0.5, _sPt.z + _perp.z * 60);
+    g.position.set(_sPt.x + _perp.x * 65, 0.5, _sPt.z + _perp.z * 65);
     g.lookAt(_sPt.x, 0.5, _sPt.z);
     scene.add(g);
 })();
 
 // ============================================================
-// 12. CHECKPOINTS  (visible arch gates)
+// 12. CHECKPOINTS — invisible logic only (no physical gates)
 // ============================================================
+// Car spawns facing -tangent (back toward the launch point), so checkpoints
+// must run in DECREASING t order to match the direction the car drives:
+// CP1 at t=0.9, CP2 at t=0.8 ... CP9 at t=0.1, then back to CP0 (t=0) to finish.
 const NUM_CHECKPOINTS = 10;
 const CHECKPOINT_RADIUS = 22;
 const checkpoints = [];
+for (let i = 0; i < NUM_CHECKPOINTS; i++) {
+    const t = i === 0 ? 0 : 1 - (i / NUM_CHECKPOINTS);
+    checkpoints.push({ position: trackCurve.getPointAt(t), t, index: i });
+}
 
+// Start / finish line — the ONLY physical marker on the track
+const startPt  = trackCurve.getPointAt(0);
+const startTan = trackCurve.getTangentAt(0);
+
+const slLine = new THREE.Mesh(
+    new THREE.BoxGeometry(roadWidth + 2, 0.1, 2),
+    new THREE.MeshStandardMaterial({ color: 0xffffff })
+);
+slLine.position.set(startPt.x, 0.15, startPt.z);
+slLine.lookAt(startPt.x + startTan.x, 0.15, startPt.z + startTan.z);
+scene.add(slLine);
+
+// Small overhead banner so the start is identifiable, but no posts/panels blocking the road
 function makeTextSprite(msg, scale = [8, 2, 1]) {
     const canvas  = document.createElement('canvas');
     canvas.width  = 256; canvas.height = 64;
@@ -377,82 +501,9 @@ function makeTextSprite(msg, scale = [8, 2, 1]) {
     sprite.scale.set(...scale);
     return sprite;
 }
-
-function buildCheckpointGate(t, index) {
-    const pt   = trackCurve.getPointAt(t);
-    const tan  = trackCurve.getTangentAt(t);
-    const isFinish = (index === 0);
-
-    const gateColor  = isFinish ? 0xffd700 : 0x00aaff;
-    const postColor  = isFinish ? 0xff8800 : 0x0044cc;
-    const gateH      = 9;
-    const gateW      = roadWidth + 6;
-
-    const g = new THREE.Group();
-
-    // Translucent gate panel
-    const panel = new THREE.Mesh(
-        new THREE.BoxGeometry(gateW, gateH, 0.5),
-        new THREE.MeshStandardMaterial({
-            color: gateColor, transparent: true, opacity: 0.35,
-            emissive: gateColor, emissiveIntensity: 0.5, side: THREE.DoubleSide
-        })
-    );
-    panel.position.y = gateH / 2;
-
-    // Posts
-    const postGeo = new THREE.BoxGeometry(1.2, gateH, 1.2);
-    const postMat = new THREE.MeshStandardMaterial({ color: postColor });
-    const postL   = new THREE.Mesh(postGeo, postMat);
-    const postR   = new THREE.Mesh(postGeo, postMat);
-    postL.position.set(-(gateW / 2), gateH / 2, 0);
-    postR.position.set( (gateW / 2), gateH / 2, 0);
-
-    // Top beam
-    const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(gateW + 1.2, 1.2, 1.2),
-        postMat
-    );
-    beam.position.y = gateH;
-
-    // Label
-    const label = makeTextSprite(isFinish ? 'START / FINISH' : `CP ${index}`, [12, 2.5, 1]);
-    label.position.y = gateH + 2.5;
-
-    g.add(panel, postL, postR, beam, label);
-    g.position.copy(pt);
-    g.position.y = 0;
-    // Orient gate perpendicular to track direction
-    g.lookAt(pt.x + tan.x, 0, pt.z + tan.z);
-    scene.add(g);
-
-    return { group: g, position: pt.clone(), t, panelMat: panel.material };
-}
-
-// CP0 = start/finish at t=0.
-// CP1..CP9 step backwards through t so they match the direction the car
-// is pointing (the car faces +tangent at t=0, which means increasing t).
-// Actually the ellipse goes counter-clockwise when cos/sin is used with
-// increasing angle, but the car lookAt points it along +startTan.
-// We determine the correct order at runtime by checking which t-direction
-// from CP0 the car naturally drives into first.
-// Simple reliable fix: place CPs in increasing t order (0, 0.1 … 0.9),
-// spawn car pointing in the +tangent direction, require CP1 first.
-for (let i = 0; i < NUM_CHECKPOINTS; i++) {
-    const t = i / NUM_CHECKPOINTS;
-    checkpoints.push(buildCheckpointGate(t, i));
-}
-
-// Start/finish line visual
-const startPt  = trackCurve.getPointAt(0);
-const startTan = trackCurve.getTangentAt(0);
-const slLine   = new THREE.Mesh(
-    new THREE.BoxGeometry(roadWidth + 2, 0.1, 2),
-    new THREE.MeshStandardMaterial({ color: 0xffffff })
-);
-slLine.position.set(startPt.x, 0.15, startPt.z);
-slLine.lookAt(startPt.x + startTan.x, 0.15, startPt.z + startTan.z);
-scene.add(slLine);
+const startBanner = makeTextSprite('START / FINISH', [16, 3, 1]);
+startBanner.position.set(startPt.x, 9, startPt.z);
+scene.add(startBanner);
 
 // ============================================================
 // 13. F1 CAR
@@ -511,13 +562,12 @@ camera.position.set(0, 10, -100);
 // ============================================================
 const mapCanvas = document.getElementById('minimap');
 const mapCtx    = mapCanvas.getContext('2d');
-const MAP_BOUNDS = 210;
+const MAP_BOUNDS = 230;
 
 function drawMinimap() {
     mapCtx.clearRect(0, 0, 200, 200);
     const m = v => ((v + MAP_BOUNDS) / (MAP_BOUNDS * 2)) * 200;
 
-    // Track
     mapCtx.beginPath();
     mapCtx.strokeStyle = '#555';
     mapCtx.lineWidth   = 10;
@@ -527,13 +577,10 @@ function drawMinimap() {
     }
     mapCtx.stroke();
 
-    // Checkpoints
-    checkpoints.forEach((cp, idx) => {
-        mapCtx.fillStyle = idx === 0 ? '#ffd700' : '#00aaff';
-        mapCtx.fillRect(m(cp.position.x) - 3, m(cp.position.z) - 3, 6, 6);
-    });
+    // Start/finish marker
+    mapCtx.fillStyle = '#ffd700';
+    mapCtx.fillRect(m(startPt.x) - 4, m(startPt.z) - 4, 8, 8);
 
-    // Other players
     for (const id in players) {
         const p = players[id];
         mapCtx.fillStyle = p.hexColor || '#3366ff';
@@ -542,7 +589,6 @@ function drawMinimap() {
         mapCtx.fill();
     }
 
-    // My car
     if (myCar) {
         mapCtx.fillStyle = myColor;
         mapCtx.beginPath();
@@ -613,25 +659,22 @@ document.getElementById('join-btn').addEventListener('click', () => {
 
     myCar = createF1Car(myColor, myName);
 
-    // Spawn safely on the track, 8 units behind CP0 in the driving direction.
-    // The car must drive FORWARD (in +tangent direction) toward CP1, CP2 … CP0.
-    // Offset slightly to the left so multiple players don't overlap.
+    // Spawn 8 units behind the start line, on the opening straight
     const perpX = -startTan.z, perpZ = startTan.x; // left-hand perp
-    const gridOff = (Math.random() - 0.5) * 10; // small lateral scatter
+    const gridOff = (Math.random() - 0.5) * 10;
     myCar.position.set(
         startPt.x - startTan.x * 8 + perpX * gridOff,
         0.5,
         startPt.z - startTan.z * 8 + perpZ * gridOff
     );
-    // Face FORWARD along the track (toward increasing t = toward CP1)
+    // Face the OPPOSITE direction from before — look back along -tangent
     myCar.lookAt(
-        startPt.x + startTan.x * 20,
+        startPt.x - startTan.x * 20,
         0.5,
-        startPt.z + startTan.z * 20
+        startPt.z - startTan.z * 20
     );
     scene.add(myCar);
 
-    // Must hit CP1 first, then CP2…CP9, then CP0 to complete a lap
     nextCheckpointIndex = 1;
     lapsCompleted  = 0;
     currentLap     = 1;
@@ -661,6 +704,7 @@ function startCountdown() {
             if (engineGain) engineGain.gain.setTargetAtTime(0.05, audioCtx.currentTime, 0.5);
             gameState = 2;
             raceStartTime = Date.now();
+            lapStartTime  = Date.now();
         } else {
             clearInterval(timer);
             cdText.style.opacity = 0;
@@ -676,14 +720,17 @@ function showHazardMessage(msg, color = '#ff6600') {
     setTimeout(() => { el.style.opacity = 0; }, 1800);
 }
 
+function formatTime(ms) {
+    const mm = Math.floor(ms / 60000).toString().padStart(2, '0');
+    const ss = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
+    const cs = Math.floor((ms % 1000) / 10).toString().padStart(2, '0');
+    return `${mm}:${ss}.${cs}`;
+}
+
 function updateUI() {
     document.getElementById('speedometer').innerText = Math.abs(speed * 200).toFixed(0);
     if (gameState === 2) {
-        const e  = Date.now() - raceStartTime;
-        const mm = Math.floor(e / 60000).toString().padStart(2, '0');
-        const ss = Math.floor((e % 60000) / 1000).toString().padStart(2, '0');
-        const ms = Math.floor((e % 1000) / 10).toString().padStart(2, '0');
-        document.getElementById('timer').innerText = `${mm}:${ss}.${ms}`;
+        document.getElementById('timer').innerText = formatTime(Date.now() - raceStartTime);
     }
     drawMinimap();
 }
@@ -699,8 +746,7 @@ window.addEventListener('resize',  () => {
 // ============================================================
 // 17. COLLISION HELPERS
 // ============================================================
-// Pre-sample the track centreline for fast closest-point lookup
-const TRACK_SAMPLES = 300;
+const TRACK_SAMPLES = 360;
 const trackSamples = [];
 for (let i = 0; i < TRACK_SAMPLES; i++) {
     trackSamples.push(trackCurve.getPointAt(i / TRACK_SAMPLES));
@@ -712,7 +758,7 @@ function getDistanceFromTrackCentre(px, pz) {
     for (const pt of trackSamples) {
         const dx = px - pt.x;
         const dz = pz - pt.z;
-        const d  = dx * dx + dz * dz; // squared, for speed
+        const d  = dx * dx + dz * dz;
         if (d < minDist) { minDist = d; closestPt = pt; }
     }
     return { dist: Math.sqrt(minDist), closestPt };
@@ -721,9 +767,8 @@ function getDistanceFromTrackCentre(px, pz) {
 function checkBoundaryWalls() {
     if (barrierHitCooldown > 0) { barrierHitCooldown--; return; }
     const { dist, closestPt } = getDistanceFromTrackCentre(myCar.position.x, myCar.position.z);
-    const limit = roadWidth / 2 - 0.5; // car must stay within half-road-width of centre
+    const limit = roadWidth / 2 - 0.5;
     if (dist > limit) {
-        // Push car back toward track centre
         const dx = myCar.position.x - closestPt.x;
         const dz = myCar.position.z - closestPt.z;
         const angle = Math.atan2(dz, dx);
@@ -788,23 +833,22 @@ function checkSpeedBumpCollisions() {
     }
 }
 
-// ============================================================
-// 18. CHECKPOINT FLASH HELPER
-// ============================================================
-function flashGate(cp, flashColor = 0x00ff44) {
-    const orig = cp.panelMat.color.getHex();
-    cp.panelMat.color.setHex(flashColor);
-    cp.panelMat.emissive.setHex(flashColor);
-    cp.panelMat.opacity = 0.8;
-    setTimeout(() => {
-        cp.panelMat.color.setHex(orig);
-        cp.panelMat.emissive.setHex(orig);
-        cp.panelMat.opacity = 0.35;
-    }, 500);
+function checkBoostPads() {
+    for (const pad of boostPads) {
+        if (pad.cooldown > 0) { pad.cooldown--; continue; }
+        const dx = myCar.position.x - pad.position.x;
+        const dz = myCar.position.z - pad.position.z;
+        if (Math.sqrt(dx * dx + dz * dz) < 6) {
+            boostTimer = 40; // frames of boost
+            pad.cooldown = 60;
+            playBoostSound();
+            showHazardMessage('🚀 BOOST!', '#00ffaa');
+        }
+    }
 }
 
 // ============================================================
-// 19. MAIN LOOP
+// 18. MAIN LOOP
 // ============================================================
 function animate() {
     requestAnimationFrame(animate);
@@ -824,7 +868,10 @@ function animate() {
                 speed > 0 ? speed = Math.max(0, speed - deceleration)
                           : speed = Math.min(0, speed + deceleration);
             }
-            speed = THREE.MathUtils.clamp(speed, -maxSpeed * 0.4, maxSpeed);
+
+            const effectiveMax = boostTimer > 0 ? maxSpeed * 1.6 : maxSpeed;
+            if (boostTimer > 0) { boostTimer--; speed = Math.min(speed + acceleration * 2, effectiveMax); }
+            speed = THREE.MathUtils.clamp(speed, -maxSpeed * 0.4, effectiveMax);
 
             if (Math.abs(speed) > 0.05) {
                 const dir = speed > 0 ? 1 : -1;
@@ -842,6 +889,7 @@ function animate() {
             checkBarrierCollisions();
             checkConeCollisions();
             checkSpeedBumpCollisions();
+            checkBoostPads();
 
             // Multiplayer bumps
             for (const id in players) {
@@ -857,21 +905,26 @@ function animate() {
                 }
             }
 
-            // --- Checkpoint logic ---
-            const cp   = checkpoints[nextCheckpointIndex];
-            const cdx  = myCar.position.x - cp.position.x;
-            const cdz  = myCar.position.z - cp.position.z;
+            // --- Checkpoint / lap logic ---
+            const cp  = checkpoints[nextCheckpointIndex];
+            const cdx = myCar.position.x - cp.position.x;
+            const cdz = myCar.position.z - cp.position.z;
 
             if (Math.sqrt(cdx * cdx + cdz * cdz) < CHECKPOINT_RADIUS) {
-                flashGate(cp);
                 playBeep(600, 0.1, 'sine');
-
                 const wasFinishLine = (nextCheckpointIndex === 0);
                 nextCheckpointIndex = (nextCheckpointIndex + 1) % NUM_CHECKPOINTS;
 
                 if (wasFinishLine) {
-                    // Crossed the start/finish gate → lap complete
                     lapsCompleted++;
+                    const lapTime = Date.now() - lapStartTime;
+                    lapStartTime  = Date.now();
+                    if (bestLapTime === null || lapTime < bestLapTime) {
+                        bestLapTime = lapTime;
+                        const bestLapEl = document.getElementById('best-lap');
+                        if (bestLapEl) bestLapEl.innerText = `Best Lap: ${formatTime(bestLapTime)}`;
+                    }
+
                     if (lapsCompleted >= totalLaps) {
                         gameState = 3;
                         document.getElementById('race-state').innerText = '🏁 FINISHED!';
@@ -882,16 +935,14 @@ function animate() {
                     } else {
                         currentLap = lapsCompleted + 1;
                         document.getElementById('race-state').innerText = `Lap ${currentLap} / ${totalLaps}`;
-                        showHazardMessage(`✅ LAP ${lapsCompleted} COMPLETE!`, '#00ff88');
+                        showHazardMessage(`✅ LAP ${lapsCompleted} — ${formatTime(lapTime)}`, '#00ff88');
                     }
-                } else {
-                    showHazardMessage(`CP ${nextCheckpointIndex - 1 < 0 ? NUM_CHECKPOINTS - 1 : nextCheckpointIndex - 1} ✓`, '#00ccff');
                 }
             }
 
             // --- Engine audio ---
             if (audioCtx && engineOsc) {
-                engineOsc.frequency.setTargetAtTime(40 + (Math.abs(speed) / maxSpeed) * 150, audioCtx.currentTime, 0.1);
+                engineOsc.frequency.setTargetAtTime(40 + (Math.abs(speed) / effectiveMax) * 150, audioCtx.currentTime, 0.1);
                 engineGain.gain.setTargetAtTime(Math.abs(speed) > 0.05 ? 0.15 : 0.05, audioCtx.currentTime, 0.2);
             }
 
